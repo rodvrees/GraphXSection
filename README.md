@@ -100,12 +100,12 @@ Example configuration snippet:
     "use_best_model" : true,
     "save_model" : false,
     "save_dfs" : false,
-    "save_predictions" : true,
+    "save_predictions" : false,
     "save_plot" : false,
-    "saliency_mapping" : true,
+    "saliency_mapping" : false,
     "wandb" : {
-        "use" : true,
-        "project" : "GraphCCS"
+        "use" : false,
+        "project" : "GraphXSection"
     }
 }
 ```
