@@ -114,7 +114,7 @@ Example configuration snippet:
 The program expects CSV-formatted data, which should be specified in the `data_path` configuration parameter within your JSON configuration file. The CSV file should contain at least the following columns:
 
 - **SMILES:** The SMILES (Simplified Molecular Input Line Entry System) representation of the molecule. This is a string that encodes the molecular structure and is used as input to the molecular encoder.
-- **Adduct:** The type of adduct (e.g., `(+H)`) associated with the molecule. This is crucial for accurate CCS prediction as different adducts can affect the CCS values.
+- **Adduct:** The type of adduct (e.g., `(+H)`) associated with the molecule. 
 - **monoisotopic mass:** The monoisotopic mass of the molecule, for plotting purposes.
 - **CCS:** The experimentally determined Collisional Cross Section value that the model aims to predict. This is the target variable for training the model.
 
