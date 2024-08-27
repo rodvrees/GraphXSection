@@ -1,0 +1,7 @@
+checkpoints/
+configs/
+data/
+predictions/
+wandb/
+hyperparams_optimalization.py
+__pycache__/
