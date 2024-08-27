@@ -1,9 +1,8 @@
 import logging
-import wandb
 import tensorflow as tf
 from tensorflow import keras
 from wandb.integration.keras import WandbMetricsLogger
-from GraphXSection.model import SigmaCCSMimic, build_QSAR_model
+from GraphXSection.model import build_QSAR_model
 from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -117,19 +116,12 @@ def train_GraphXSection(
         )
     )
 
-    # Model selection based on the configuration
-    if config["model"]["type"] == "SigmaCCS":
-        model = SigmaCCSMimic(config)
-    elif config["model"]["type"] == "QSAR":
-        model = build_QSAR_model(config, train_x_mol)
-    elif config["model"]["type"] == "QSAR_linear":
-        model = build_QSAR_model(config, train_x_mol)
-    elif config["model"]["type"] == "QSAR_sequential":
+    if config["model"]["type"] == "QSAR_linear":
         model = build_QSAR_model(config, train_x_mol)
 
     else:
         raise ValueError(
-            f"Invalid model type: {config['model']['type']}. Only 'SigmaCCS' and 'QSAR' are supported for now."
+            f"Invalid model type: {config['model']['type']}. Only 'QSAR_linear' is supported for now."
         )
 
     metrics = config["model"]["metrics"]
