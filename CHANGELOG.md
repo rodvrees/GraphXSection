@@ -15,3 +15,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Changed program name from GraphCCS to GraphXSection, since GraphCCS is already an existing CCS predictor.
 - Added requirements.txt
+- Added README.md

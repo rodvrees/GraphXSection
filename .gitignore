@@ -4,4 +4,7 @@ data/
 predictions/
 wandb/
 hyperparams_optimalization.py
+InCHI_to_SMILES.ipynb
+inspect_saliency.ipynb
+preprocess_data.ipynb
 __pycache__/
