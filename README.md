@@ -4,7 +4,7 @@
 This (very much a WIP) repository contains the code for training and evaluating Graph Neural Network (GNN)-based models for predicting the Collisional Cross Section (CCS) of small molecules.
 Furthermore, the creation of saliency maps is also implemented to visually explain the model's prediction.
 
-GraphXSection is an implementation of [Molgraph](https://github.com/akensert/molgraph)
+GraphXSection is an implementation of [Molgraph](https://github.com/akensert/molgraph).
 
 ## Table of Contents
 - [Installation](#installation)
@@ -30,7 +30,7 @@ python GraphXSection path_to_config.json
 ```
 ## Configuration
 
-The model and training processs are configured via a JSON file. 
+The model and training process are configured via a JSON file. 
 Example configuration snippet:
 ```json
 {
