@@ -1,4 +1,4 @@
-"""Data extraction functions for GraphCCS."""
+"""Data extraction functions for GraphXSection."""
 
 import logging
 import pandas as pd

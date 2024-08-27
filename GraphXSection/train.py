@@ -3,7 +3,7 @@ import wandb
 import tensorflow as tf
 from tensorflow import keras
 from wandb.integration.keras import WandbMetricsLogger
-from GraphCCS.model import SigmaCCSMimic, build_QSAR_model
+from GraphXSection.model import SigmaCCSMimic, build_QSAR_model
 from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -48,13 +48,13 @@ def _configure_callbacks(config: Dict[str, Any]) -> List[keras.callbacks.Callbac
     return callbacks
 
 
-def train_GraphCCS(
+def train_GraphXSection(
     train_data: Dict[str, Any],
     valid_data: Dict[str, Any],
     mol_encoder: Any,
     config: Dict[str, Any],
 ) -> keras.Model:
-    """Train the GraphCCS model.
+    """Train the GraphXSection model.
 
     Args:
         train_data (Dict[str, Any]): Training data.

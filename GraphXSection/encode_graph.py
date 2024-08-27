@@ -1,4 +1,4 @@
-"""Configure molecular encoder for GraphCCS model"""
+"""Configure molecular encoder for GraphXSection model"""
 
 import logging
 from molgraph import chemistry

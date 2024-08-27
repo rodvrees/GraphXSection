@@ -93,7 +93,7 @@ def _parse_config(config_path: Path) -> Dict[str, Any]:
 @click.option("--log-level", type=click.Choice(LOGGING_LEVELS.keys()), default="INFO")
 def main(config: str, log_level: str) -> None:
     """
-    Main entry point for GraphCCS.
+    Main entry point for GraphXSection.
 
     Args:
         config (str): Path to the JSON configuration file.
@@ -105,11 +105,11 @@ def main(config: str, log_level: str) -> None:
     # Import after logging setup to avoid tensorflow logging conflicts
     from data_extract import data_extract
     from encode_graph import get_encoder
-    from train import train_GraphCCS
+    from train import train_GraphXSection
     from evaluate import evaluate
     from saliency_mapping import get_saliency_maps
 
-    logger.info("Starting GraphCCS")
+    logger.info("Starting GraphXSection")
     config = _parse_config(config)
 
     if config.get("wandb", False) and config["wandb"].get("use", False):
@@ -117,7 +117,7 @@ def main(config: str, log_level: str) -> None:
 
     train_data, valid_data, test_data, test_df, valid_df = data_extract(config)
     mol_encoder = get_encoder(config)
-    model = train_GraphCCS(train_data, valid_data, mol_encoder, config)
+    model = train_GraphXSection(train_data, valid_data, mol_encoder, config)
 
     # Evaluate with best model
     if config["use_best_model"]:
@@ -154,7 +154,7 @@ def main(config: str, log_level: str) -> None:
         logger.debug(f"Saliency maps shape: {saliency_maps.shape}")
         logger.info("Saliency maps generated")
 
-    logger.info("GraphCCS Done")
+    logger.info("GraphXSection Done")
 
 
 if __name__ == "__main__":
