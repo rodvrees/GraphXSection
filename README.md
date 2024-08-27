@@ -109,6 +109,9 @@ Example configuration snippet:
     }
 }
 ```
+
+By setting `saliency_mapping` to `true`, saliency maps are created for the test set predictions and outputted as a pickle file.
+
 ## Data
 
 The program expects CSV-formatted data, which should be specified in the `data_path` configuration parameter within your JSON configuration file. The CSV file should contain at least the following columns:
