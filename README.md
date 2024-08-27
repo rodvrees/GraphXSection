@@ -23,7 +23,7 @@ pip install -r requirements.txt
 ## Usage
 ### Training the model
 
-To train a model, prepare a JSON configuration file and run the following command:
+To train and evaluate a model, prepare a JSON configuration file and run the following command:
 
 ```bash
 python GraphXSection path_to_config.json
