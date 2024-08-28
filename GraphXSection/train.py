@@ -70,14 +70,12 @@ def train_GraphXSection(
     train_smiles = train_data["smiles"]
     train_x_adduct = train_data["adduct_OHE"]
     train_x_adduct = tf.convert_to_tensor(train_x_adduct, dtype=tf.int32)
-    train_x_mass = train_data["mass"]
     train_x_mol = mol_encoder(train_smiles)
     y_train = train_data["y"]
 
     valid_smiles = valid_data["smiles"]
     valid_x_adduct = valid_data["adduct_OHE"]
     valid_x_adduct = tf.convert_to_tensor(valid_x_adduct, dtype=tf.int32)
-    valid_x_mass = valid_data["mass"]
     valid_x_mol = mol_encoder(valid_smiles)
     y_valid = valid_data["y"]
 
