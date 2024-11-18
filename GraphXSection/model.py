@@ -3,6 +3,7 @@ import tensorflow as tf
 from tensorflow import keras
 import logging
 from typing import Any, Dict
+from molgraph.layers import GNN
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ class DoNothing(keras.layers.Layer):
         return inputs
 
 
-class GNN(keras.Model):
+class GNN_old(keras.Model):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         self._layers = [
@@ -56,7 +57,7 @@ class QSAR_linear(keras.Model):
         self.config = config
         self.variance_threshold = variance_threshold
         self.donothing = DoNothing(name="donothing")
-        self.gnn = GNN(self.config)
+        self.gnn = GNN_old(self.config)
         self.readoutandconcatadduct = ReadoutAndConcatAdduct(
             name="readoutandconcatadduct"
         )
@@ -98,10 +99,64 @@ class QSAR_linear(keras.Model):
         return config
 
 
-def build_QSAR_model(config: Dict[str, Any], train_graph: Any) -> keras.Model:
+def build_QSAR_model(
+    config: Dict[str, Any], train_graph: Any, train_dataset: Any
+) -> keras.Model:
     variance_threshold = layers.VarianceThreshold()
     variance_threshold.adapt(train_graph)
     if config["model"]["type"] == "QSAR_linear":
         model = QSAR_linear(config, variance_threshold)
-
+    elif config["model"]["type"] == "QSAR_sequential":
+        model = get_qsar_model(train_graph, config, variance_threshold, train_dataset)
     return model
+
+
+class ReadoutAndConcatAdduct_sequential(keras.layers.Layer):
+
+    def __init__(self, mode="mean", **kwargs):
+        super().__init__(**kwargs)
+        self.mode = mode
+        self.readout = layers.Readout(mode=self.mode)
+        self.concat = keras.layers.Concatenate(axis=-1)
+
+    def call(self, inputs):
+        return self.concat(
+            [self.readout(inputs), tf.cast(inputs._x_adduct, tf.float32)]
+        )
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"mode": self.mode})
+        return config
+
+
+def get_qsar_model(x_graph, config, variance_threshold, train_dataset):
+    input_spec = train_dataset.element_spec[0]
+
+    graph_input = layers.GNNInput(input_spec)
+
+    graph_layers = [
+        layers.FeatureProjection(units=config["model"]["gnn_units"], name="proj")
+    ] + [
+        layers.GINConv(units=config["model"]["gnn_units"], name=f"gin_{i+1}")
+        for i in range(config["model"]["num_GNN_layers"])
+    ]
+
+    graph_layers = GNN(graph_layers)
+
+    readout = ReadoutAndConcatAdduct_sequential(mode="sum")
+
+    dense_layers = [
+        keras.layers.Dense(
+            config["model"]["dense_units"],
+            activation="relu",
+            kernel_initializer=config["model"]["kernel_initializer"],
+            kernel_regularizer=tf.keras.regularizers.L1(config["model"]["l1"]),
+        )
+        for _ in range(config["model"]["num_dense_layers"])
+    ]
+    dense_layers += [keras.layers.Dense(1)]
+
+    return keras.Sequential(
+        [graph_input, variance_threshold, graph_layers, readout, *dense_layers]
+    )

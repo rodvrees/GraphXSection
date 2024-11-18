@@ -115,28 +115,33 @@ def get_encoder(config: Dict[str, Any]) -> chemistry.MolecularGraphEncoder:
     atom_features = _get_atom_features(config)
     bond_features = _get_bond_features(config)
     atom_encoder = chemistry.Featurizer(atom_features)
-    bond_encoder = chemistry.Featurizer(bond_features)
-    if not config["mol_encoder"].get("3D", False):
-        logger.debug("Setting up 2D molecular encoder")
-        mol_encoder = chemistry.MolecularGraphEncoder(
-            atom_encoder,
-            bond_encoder,
-            positional_encoding_dim=config["mol_encoder"]["positional_encoding_dim"],
-        )
+    try:
+        bond_encoder = chemistry.Featurizer(bond_features)
+        if not config["mol_encoder"].get("3D", False):
+            logger.debug("Setting up 2D molecular encoder")
+            mol_encoder = chemistry.MolecularGraphEncoder(
+                atom_encoder,
+                bond_encoder,
+                positional_encoding_dim=config["mol_encoder"][
+                    "positional_encoding_dim"
+                ],
+            )
 
-    else:
-        raise NotImplementedError("3D molecular encoder is not implemented yet")
-        logger.debug("Setting up 3D molecular encoder")
-        if not config["mol_encoder"].get("generate_conformer", False):
-            conformer_generator = None
         else:
-            conformer_generator = chemistry.ConformerGenerator()
+            raise NotImplementedError("3D molecular encoder is not implemented yet")
+    except ValueError:
+        logger.debug("No bond features provided.")
+        if not config["mol_encoder"].get("3D", False):
+            logger.debug("Setting up 2D molecular encoder")
+            mol_encoder = chemistry.MolecularGraphEncoder(
+                atom_encoder,
+                bond_encoder=None,
+                positional_encoding_dim=config["mol_encoder"][
+                    "positional_encoding_dim"
+                ],
+            )
+        else:
+            raise NotImplementedError("3D molecular encoder is not implemented yet")
 
-        mol_encoder = chemistry.MolecularGraphEncoder3D(
-            atom_encoder,
-            conformer_generator=conformer_generator,
-            edge_radius=config["mol_encoder"].get("edge_radius", None),
-            coulomb=config["mol_encoder"].get("coulomb", True),
-        )
     logger.info("Molecular encoder setup complete")
     return mol_encoder

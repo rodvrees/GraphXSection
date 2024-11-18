@@ -2,7 +2,7 @@ import logging
 import tensorflow as tf
 from tensorflow import keras
 from wandb.integration.keras import WandbMetricsLogger
-from GraphXSection.model import build_QSAR_model
+from model import build_QSAR_model, get_qsar_model
 from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,13 @@ def train_GraphXSection(
     )
 
     if config["model"]["type"] == "QSAR_linear":
-        model = build_QSAR_model(config, train_x_mol)
+        logger.warning(
+            'DeprationWarning: "QSAR_linear" model type is deprecated, and will be removed in future versions. Use "QSAR_sequential" instead.'
+        )
+        model = build_QSAR_model(config, train_x_mol, train_dataset)
+
+    elif config["model"]["type"] == "QSAR_sequential":
+        model = build_QSAR_model(config, train_x_mol, train_dataset)
 
     else:
         raise ValueError(

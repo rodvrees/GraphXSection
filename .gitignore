@@ -3,7 +3,9 @@ configs/
 data/
 predictions/
 wandb/
+
 hyperparams_optimalization.py
+feature_optimalization.py
 
 InCHI_to_SMILES.ipynb
 inspect_saliency.ipynb

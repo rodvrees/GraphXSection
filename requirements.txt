@@ -45,7 +45,7 @@ matplotlib==3.9.1
 matplotlib-inline==0.1.7
 mdurl==0.1.2
 ml-dtypes==0.3.2
-molgraph==0.6.10
+molgraph==0.6.14
 nest-asyncio==1.6.0
 numpy==1.26.4
 nvidia-cublas-cu12==12.2.5.6

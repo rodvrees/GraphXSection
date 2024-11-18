@@ -23,8 +23,6 @@ def get_saliency_maps(model: tf.keras.Model, dataset: tf.data.Dataset) -> Any:
     for batch in dataset:
         x_all, y = batch
 
-    layer_names = ["gnn"]
-
-    saliency = molgraph.models.GradientActivationMapping(model, layer_names=layer_names)
+    saliency = molgraph.models.GradientActivationMapping(model)
     saliency_maps = saliency(x_all.separate())
     return saliency_maps

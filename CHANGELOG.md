@@ -14,5 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Changed program name from GraphCCS to GraphXSection, since GraphCCS is already an existing CCS predictor.
-- Added requirements.txt
-- Added README.md
+
+### Added
+- requirements.txt
+- README.md
+
+## [0.1.1] - 2024-11-18
+
+### Changed
+- Adapted to Molgraph 0.6.14: QSAR model was turned into a keras.Sequential model
