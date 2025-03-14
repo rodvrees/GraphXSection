@@ -1,6 +1,6 @@
 checkpoints/
 configs/
-data/
+# data/
 predictions/
 wandb/
 

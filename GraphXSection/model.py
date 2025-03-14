@@ -151,7 +151,7 @@ def get_qsar_model(x_graph, config, variance_threshold, train_dataset):
             config["model"]["dense_units"],
             activation="relu",
             kernel_initializer=config["model"]["kernel_initializer"],
-            kernel_regularizer=tf.keras.regularizers.L1(config["model"]["l1"]),
+            kernel_regularizer=tf.keras.regularizers.L1(config["model"].get("l1", 0)),
         )
         for _ in range(config["model"]["num_dense_layers"])
     ]

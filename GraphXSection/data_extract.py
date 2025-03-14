@@ -4,6 +4,7 @@ import logging
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
 from typing import Tuple, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -62,39 +63,112 @@ def _get_adduct_OHE(df: pd.DataFrame) -> np.ndarray:
     return adduct_ohe.values
 
 
-def _get_data(df: pd.DataFrame) -> Dict[str, Any]:
-    """Extract data necessary for training from the dataframe.
+def _get_global_feats(df: pd.DataFrame) -> np.ndarray:
+    """Extract global features from the dataframe.
 
     Args:
         df (pd.DataFrame): Dataframe with the data.
 
     Returns:
-        Dict[str, Any]: Dictionary with extracted data, including SMILES, one-hot encoded adducts and CCS.
+        np.ndarray: Global features.
     """
-    smiles = df["SMILES"].values
+    feature_names = [
+        "Molecular Weight",
+        # "Van der Waals Volume",
+        # "Radius of Gyration",
+        "Asphericity",
+        "Dipole Moment",
+        # "Polarizability",
+    ]
+
+    global_feats = df[feature_names].values
+    return global_feats
+
+
+def _get_data(
+    df: pd.DataFrame, smiles_col="SMILES", train=False, scaler=None
+) -> Tuple[Dict[str, Any], MinMaxScaler]:
+    """Extract data necessary for training from the dataframe.
+
+    Args:
+        df (pd.DataFrame): Dataframe with the data.
+        train (bool): If True, fit a new scaler. If False, use the provided scaler.
+        scaler (MinMaxScaler): Scaler to apply to the features (None if training).
+
+    Returns:
+        Tuple[Dict[str, Any], MinMaxScaler]: Extracted data and the scaler (if train=True).
+    """
+
+    # Remove rows with NaN values in the SMILES column or the global features
+    df = df.dropna(
+        subset=[
+            smiles_col,
+            "Molecular Weight",
+            # "Van der Waals Volume",
+            # "Radius of Gyration",
+            "Asphericity",
+            "Dipole Moment",
+            # "Polarizability",
+            "Adduct",
+            "CCS",
+        ]
+    )
+    smiles = df[smiles_col].values
     adduct_OHE = _get_adduct_OHE(df)
+    # TODO: if no features in the dataframe, calculate them
+    global_feats = _get_global_feats(df)
+
+    logger.debug(f"First few features before scaling: {global_feats[:5]}")
+
+    # Min-max normalize the global features
+    if train:
+        scaler = MinMaxScaler()
+        global_feats = scaler.fit_transform(global_feats)
+        logger.debug(f"First few features after scaling: {global_feats[:5]}")
+        logger.debug(
+            f"Scaler fitted: {scaler}, which has seen {scaler.n_samples_seen_} samples"
+        )
+    else:
+        if scaler is None:
+            raise ValueError("Scaler must be provided when train=False")
+
+        logger.debug(
+            f"Features are scaled using {scaler}, which has seen {scaler.n_samples_seen_} samples"
+        )
+        global_feats = scaler.transform(global_feats)
+        logger.debug(f"First few features after scaling: {global_feats[:5]}")
+
+    # Concatenate the global features and the one-hot encoded adducts
+    all_feats = np.concatenate([adduct_OHE, global_feats], axis=1)
+    logger.debug(f"First few features after concatenation: {all_feats[:5]}")
+
     y = df["CCS"].values
 
-    logger.info(f"Data shape: {smiles.shape}, {adduct_OHE.shape}, {y.shape}")
+    logger.info(f"Data shape: {smiles.shape}, {all_feats.shape}, {y.shape}")
 
     data = {
         "smiles": smiles,
-        "adduct_OHE": adduct_OHE,
+        "global_feats": all_feats,
         "y": y,
     }
-    return data
+    return data, scaler if train else None  # Return scaler only if train=True
 
 
-def data_extract(
-    config: Dict[str, Any]
-) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], pd.DataFrame, pd.DataFrame]:
+def data_extract(config: Dict[str, Any]) -> Tuple[
+    Dict[str, Any],
+    Dict[str, Any],
+    Dict[str, Any],
+    pd.DataFrame,
+    pd.DataFrame,
+]:
     """Extract the data for training the model based on the configuration provided.
 
     Args:
         config (Dict[str, Any]): Configuration dictionary.
 
     Returns:
-        Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], pd.DataFrame, pd.DataFrame]: Training, validation, and test data, and the validation and test dataframes.
+        Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], pd.DataFrame, pd.DataFrame, MinMaxScaler]:
+        Training, validation, and test data, the validation and test dataframes, and the fitted MinMaxScaler.
     """
 
     logger.info("Reading data file: %s", config["data_path"])
@@ -113,13 +187,28 @@ def data_extract(
         df_test.to_csv(f"{config['output_path']}/test_df.csv", index=False)
 
     logger.debug(
-        f"Training data shape: {df_train.shape}\n{df_valid.shape}\n{df_test.shape}"
+        f"Training data shape: {df_train.shape}, {df_valid.shape}, {df_test.shape}"
     )
 
-    logger.info("Extracting data")
-    train_data = _get_data(df_train)
-    valid_data = _get_data(df_valid)
-    test_data = _get_data(df_test)
+    logger.info("Extracting training data")
+    train_data, scaler = _get_data(
+        df_train, smiles_col=config.get("smiles_col", "SMILES"), train=True
+    )
+
+    logger.info("Extracting validation and test data using fitted scaler")
+    valid_data, _ = _get_data(
+        df_valid,
+        smiles_col=config.get("smiles_col", "SMILES"),
+        train=False,
+        scaler=scaler,
+    )
+    test_data, _ = _get_data(
+        df_test,
+        smiles_col=config.get("smiles_col", "SMILES"),
+        train=False,
+        scaler=scaler,
+    )
+
     logger.info("Data extraction complete")
 
     return train_data, valid_data, test_data, df_test, df_valid

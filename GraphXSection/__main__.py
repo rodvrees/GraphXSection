@@ -131,13 +131,12 @@ def main(config: str, log_level: str) -> None:
     # Save model
     if config["save_model"]:
         logger.info(
-            f"Saving model to {config['output_path']}/{config['run_name']}_model.h5"
+            f"Saving model to {config['output_path']}/{config['run_name']}_model.tf"
         )
 
         # TODO: Probably not working?
         model.save(
-            f"{config['output_path']}/{config['run_name']}_model.tf",
-            save_format="tf",
+            f"{config['output_path']}/{config['run_name']}_model.tf", save_format="tf"
         )
         logger.info("Model saved")
 

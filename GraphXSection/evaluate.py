@@ -79,20 +79,21 @@ def evaluate(
 
     logger.info("Evaluating model on test set")
     test_smiles = test_data["smiles"]
-    test_x_adduct = test_data["adduct_OHE"]
+    test_global_feats = test_data["global_feats"]
+    test_global_feats = tf.convert_to_tensor(test_global_feats, dtype=tf.float32)
     test_x_mol = mol_encoder(test_smiles)
     y_test = test_data["y"]
 
     # Create test dataset
     test_dataset = tf.data.Dataset.from_tensor_slices(
-        ((test_x_mol, test_x_adduct), y_test)
+        ((test_x_mol, test_global_feats), y_test)
     )
     test_dataset = test_dataset.batch(len(test_smiles)).prefetch(
         tf.data.experimental.AUTOTUNE
     )
     test_dataset = test_dataset.map(
-        lambda x_and_x_adduct, y: (
-            x_and_x_adduct[0].update({"_x_adduct": x_and_x_adduct[1]}),
+        lambda x_and_global_feats, y: (
+            x_and_global_feats[0].update({"_x_global": x_and_global_feats[1]}),
             y,
         )
     )
