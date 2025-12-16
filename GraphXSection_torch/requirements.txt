@@ -1,0 +1,39 @@
+# PyTorch and related packages
+torch>=2.0.0
+torch-geometric>=2.3.0
+pytorch-lightning>=2.0.0
+# torch-audio>=0.12.0
+# torch-vision>=0.13.0
+
+# Lightning ecosystem
+lightning>=2.0.0  # New unified Lightning package
+torchmetrics>=0.11.0  # For Lightning metrics
+
+# Graphamole - molecular graph neural networks
+# Note: You'll need to install graphamole from the local directory
+# pip install -e ./graphamole
+
+# Scientific computing
+numpy>=1.21.0
+pandas>=1.4.0
+scikit-learn>=1.1.0
+
+# Molecular informatics
+rdkit-pypi>=2022.3.0
+
+# Optional: Mordred for additional molecular descriptors
+# mordred>=1.2.0
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.11.0
+
+# ML experiment tracking
+wandb>=0.12.0
+
+# Logging and CLI
+rich>=12.0.0
+click>=8.1.0
+
+# Data handling
+tqdm>=4.64.0

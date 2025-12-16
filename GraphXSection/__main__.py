@@ -1,6 +1,7 @@
 """Graph neural networks for predicting the collisional cross-section of small molecules."""
 
 import logging
+from copy import deepcopy
 import click
 from rich.logging import RichHandler
 from rich.console import Console
@@ -88,6 +89,38 @@ def _parse_config(config_path: Path) -> Dict[str, Any]:
     return config
 
 
+def _overwrite_with_wandb(config_json: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Overwrite the config with wandb settings.
+
+    Args:
+        config_json (Dict[str, Any]): Configuration dictionary.
+
+    Returns:
+        Dict[str, Any]: Updated configuration dictionary.
+    """
+    logger.info("Overwriting config with wandb settings")
+    logger.debug("Original config:")
+    logger.debug(config_json)
+    if config_json.get("wandb", False):
+        if config_json["wandb"].get("use", False):
+            sweep_config = wandb.config
+            config = deepcopy(config_json)
+
+            for key, value in sweep_config.items():
+                if "." in key:
+                    keys = key.split(".")
+                    sub_config = config
+                    for k in keys[:-1]:
+                        sub_config = sub_config.get(k, {})
+                    sub_config[keys[-1]] = value
+                else:
+                    config[key] = value
+        logger.debug("Updated config with wandb settings")
+        logger.debug(config)
+    return config
+
+
 @click.command()
 @click.argument("config", type=click.Path(exists=True, dir_okay=False))
 @click.option("--log-level", type=click.Choice(LOGGING_LEVELS.keys()), default="INFO")
@@ -103,11 +136,11 @@ def main(config: str, log_level: str) -> None:
     _setup_logging(log_level)
 
     # Import after logging setup to avoid tensorflow logging conflicts
-    from data_extract import data_extract
-    from encode_graph import get_encoder
-    from train import train_GraphXSection
-    from evaluate import evaluate
-    from saliency_mapping import get_saliency_maps
+    from GraphXSection.data_extract import data_extract
+    from GraphXSection.encode_graph import get_encoder
+    from GraphXSection.train import train_GraphXSection, train_Eddy
+    from GraphXSection.evaluate import evaluate, evaluate_eddy
+    from GraphXSection.saliency_mapping import get_saliency_maps
 
     logger.info("Starting GraphXSection")
     config = _parse_config(config)
@@ -115,18 +148,37 @@ def main(config: str, log_level: str) -> None:
     if config.get("wandb", False) and config["wandb"].get("use", False):
         _setup_wandb(config)
 
+    # config = _overwrite_with_wandb(config)
+    # logger.debug("Final config:")
+    # logger.debug(config)
+
     train_data, valid_data, test_data, test_df, valid_df = data_extract(config)
-    mol_encoder = get_encoder(config)
-    model = train_GraphXSection(train_data, valid_data, mol_encoder, config)
+    if config["model"].get("type", None) != "Eddy":
+        mol_encoder = get_encoder(config)
+        model = train_GraphXSection(train_data, valid_data, mol_encoder, config)
+    else:
+        model = train_Eddy(train_data, valid_data, config)
 
     # Evaluate with best model
     if config["use_best_model"]:
         logger.info("Evaluating with best model")
         model.load_weights(config["mcp"]["mcp_path"])
         logger.debug(f"Model loaded from {config['mcp']['mcp_path']}")
-        test_x_mol, RMedAE = evaluate(model, test_data, test_df, mol_encoder, config)
+        if config["model"].get("type", None) != "Eddy":
+            test_x_mol, RMedAE = evaluate(
+                model, test_data, test_df, mol_encoder, config
+            )
+        else:
+            test_x_mol, RMedAE = evaluate_eddy(model, test_data, config)
     else:
-        test_x_mol, RMedAE = evaluate(model, test_data, test_df, mol_encoder, config)
+        if config["model"].get("type", None) != "Eddy":
+            test_x_mol, RMedAE = evaluate(
+                model, test_data, test_df, mol_encoder, config
+            )
+        else:
+            test_x_mol, RMedAE = evaluate_eddy(
+                model, test_data, test_df, mol_encoder, config
+            )
 
     # Save model
     if config["save_model"]:

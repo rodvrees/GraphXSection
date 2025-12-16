@@ -572,8 +572,8 @@ CC1=CN=C(N=C(O)C2=C(O)C3=CC=CC=C3S(=O)(=O)N2C)S1,Meloxicam,0,1,351.0347,Vion IMS
 CCN(CC)CCN=C(O)C1=C(OC)C=C(N)C(Cl)=C1,Metoclopramide,0,1,299.14,Vion IMS Q-Tof,(+H),172.6
 N=C1N=C(N2CCCCC2)C=C(N)N1O,Minoxidil,0,1,209.1277,Vion IMS Q-Tof,(+H),147.3
 [H][C@@]12CCCN[C@]1([H])CN(C1=C(F)C=C3C(=O)C(C(=O)O)=CN(C4CC4)C3=C1OC)C2,Moxifloxacin,0,1,401.1751,Vion IMS Q-Tof,(+H),196.8
-[H]/C(CC1=C(O)C2=C(COC2=O)C(C)=C1OC)=C(/C)CCC(=O)O,Mycophenolic Acid,0,1,320.126,Vion IMS Q-Tof,(+H),196.6
-[H]/C(CC1=C(O)C2=C(COC2=O)C(C)=C1OC)=C(/C)CCC(=O)O,Mycophenolic Acid,0,1,320.126,Vion IMS Q-Tof,(+Na),175.9
+[H]/C(CC1=C(O)C2=C(COC2=O)C(C)=C1OC)=C(/C)CCC(=O)O,Mycophenolicï¿½Acid,0,1,320.126,Vion IMS Q-Tof,(+H),196.6
+[H]/C(CC1=C(O)C2=C(COC2=O)C(C)=C1OC)=C(/C)CCC(=O)O,Mycophenolicï¿½Acid,0,1,320.126,Vion IMS Q-Tof,(+Na),175.9
 [H][C@@]12OC3=C(O)C=CC4=C3[C@@]13CCN(CC1CC1)[C@]([H])(C4)[C@]3(O)CCC2=O,Naltrexone,0,1,341.1627,Vion IMS Q-Tof,(+H),176.7
 [H]C1(C(O)=N[C@]([H])(CC2=CC=CC=C2)C(=O)O)CCC([H])(C(C)C)CC1,Nateglinide,0,1,317.1991,Vion IMS Q-Tof,(+H),180.3
 COC(=O)C1=C(C)NC(C)=C(C(=O)OCCN(C)CC2=CC=CC=C2)C1C1=CC([N+](=O)[O-])=CC=C1,Nicardipine,0,1,479.2056,Vion IMS Q-Tof,(+H),212.5
@@ -1965,13 +1965,13 @@ C[N+]1([O-])C2CC(OC(=O)C(CO)C3=CC=CC=C3)CC1C1OC12,(-)-Scopolamine N-oxide,0,1,31
 [H][C@]1(O)C(=O)C2=C(O)C=C(O)C=C2O[C@]1([H])C1=CC(O)=C(O)C=C1,(+)-Taxifolin,0,1,304.0583,Synapt G2-Si,(-H),163.3
 CC(=O)C1=C(O)C=C2OC3=C(C(C)=O)C(O)=C(C)C(O)=C3C2(C)C1=O,(+)-Usnic acid,0,1,344.0896,Synapt G2-Si,(+H),172.0
 CC(=O)C1=C(O)C=C2OC3=C(C(C)=O)C(O)=C(C)C(O)=C3C2(C)C1=O,(+)-Usnic acid,0,1,344.0896,Synapt G2-Si,(-H),174.4
-COC1=C(OC)C=C(CC2C3=CC(OC)=C(OC)C=C3CCN2C)C(Br)=C1,(±)-6'-Bromolaudanosine,0,1,435.1045,Synapt G2-Si,(+H),193.7
-[H]/C(C(=O)O)=C(C)/C([H])=C(\[H])[C@@]1(O)C(C)=CC(=O)CC1(C)C,(±)-Abscisic acid,0,1,264.1362,Synapt G2-Si,(+H),156.1
-[H]/C(C(=O)O)=C(C)/C([H])=C(\[H])[C@@]1(O)C(C)=CC(=O)CC1(C)C,(±)-Abscisic acid,0,1,264.1362,Synapt G2-Si,(-H),165.5
-C1=CC(C2CCCCN2)=CN=C1,(±)-Anabasine,0,1,162.1157,Synapt G2-Si,(+H),136.7
-ClC1=NC=C(C2CC3CCC2N3)C=C1,(±)-Epibatadine,0,1,208.0767,Synapt G2-Si,(+H),147.4
-[H]/C(C1=CC=CC=C1)=C(/[H])C1CC(OC)=CC(=O)O1,(±)-Kavain,0,1,230.0943,Synapt G2-Si,(+H),148.6
-[H]/C(C1=CC=CC=C1)=C(/[H])C1CC(OC)=CC(=O)O1,(±)-Kavain,0,1,230.0943,Synapt G2-Si,(+HCOOH-H),134.9
+COC1=C(OC)C=C(CC2C3=CC(OC)=C(OC)C=C3CCN2C)C(Br)=C1,(ï¿½)-6'-Bromolaudanosine,0,1,435.1045,Synapt G2-Si,(+H),193.7
+[H]/C(C(=O)O)=C(C)/C([H])=C(\[H])[C@@]1(O)C(C)=CC(=O)CC1(C)C,(ï¿½)-Abscisic acid,0,1,264.1362,Synapt G2-Si,(+H),156.1
+[H]/C(C(=O)O)=C(C)/C([H])=C(\[H])[C@@]1(O)C(C)=CC(=O)CC1(C)C,(ï¿½)-Abscisic acid,0,1,264.1362,Synapt G2-Si,(-H),165.5
+C1=CC(C2CCCCN2)=CN=C1,(ï¿½)-Anabasine,0,1,162.1157,Synapt G2-Si,(+H),136.7
+ClC1=NC=C(C2CC3CCC2N3)C=C1,(ï¿½)-Epibatadine,0,1,208.0767,Synapt G2-Si,(+H),147.4
+[H]/C(C1=CC=CC=C1)=C(/[H])C1CC(OC)=CC(=O)O1,(ï¿½)-Kavain,0,1,230.0943,Synapt G2-Si,(+H),148.6
+[H]/C(C1=CC=CC=C1)=C(/[H])C1CC(OC)=CC(=O)O1,(ï¿½)-Kavain,0,1,230.0943,Synapt G2-Si,(+HCOOH-H),134.9
 [H][C@]1([C@@]2([H])C3=C(OC)C4=C(C=C3CCN2C)OCO4)OC(=O)C2=C1C=CC(OC)=C2OC,Noscapine,0,1,413.1474,Synapt G2-Si,(+H),193.3
 [H][C@]12CC(=O)O[C@]1(C)CC[C@@]1([H])C(C)(C)CCC[C@]21C,(3aR)-(+)-Sclaerolide,0,1,250.1933,Synapt G2-Si,(+H),161.6
 [H][C@@](O)(CC=C(C)C)C1=CC(=O)C2=C(O)C=CC(O)=C2C1=O,Shikonin,0,1,288.0998,Synapt G2-Si,(+H),180.4
@@ -2376,8 +2376,8 @@ CC1=CC(=O)C2=CC=CC=C2C1=O,Menadione,0,1,172.0524,Synapt G2-Si,(+H),130.3
 [H][C@]12CCN3CC=C(COC(=O)[C@](C)(O)[C@](C)(O)[C@@]([H])(C)C(=O)O1)[C@@]32[H],Monocrotaline,0,1,325.1525,Synapt G2-Si,(+H),172.7
 O=C1C(O)=C(C2=C(O)C=C(O)C=C2)OC2=CC(O)=CC(O)=C12,Morine,0,1,302.0427,Synapt G2-Si,(+H),162.1
 O=C1C(O)=C(C2=C(O)C=C(O)C=C2)OC2=CC(O)=CC(O)=C12,Morine,0,1,302.0427,Synapt G2-Si,(-H),160.2
-[H]/C(CC1=C(O)C2=C(COC2=O)C(C)=C1OC)=C(/C)CCC(=O)O,Mycophenolic Acid,0,1,320.126,Synapt G2-Si,(+H),166.3
-[H]/C(CC1=C(O)C2=C(COC2=O)C(C)=C1OC)=C(/C)CCC(=O)O,Mycophenolic Acid,0,1,320.126,Synapt G2-Si,(-H),175.4
+[H]/C(CC1=C(O)C2=C(COC2=O)C(C)=C1OC)=C(/C)CCC(=O)O,Mycophenolicï¿½Acid,0,1,320.126,Synapt G2-Si,(+H),166.3
+[H]/C(CC1=C(O)C2=C(COC2=O)C(C)=C1OC)=C(/C)CCC(=O)O,Mycophenolicï¿½Acid,0,1,320.126,Synapt G2-Si,(-H),175.4
 O=C1C(O)=C(C2=CC(O)=C(O)C(O)=C2)OC2=CC(O)=CC(O)=C12,Myricetin,0,1,318.0376,Synapt G2-Si,(+H),167.4
 [H][C@@]1(OC2=C(C3=CC(O)=C(O)C(O)=C3)OC3=CC(O)=CC(O)=C3C2=O)O[C@@]([H])(C)[C@]([H])(O)[C@@]([H])(O)[C@@]1([H])O,Myricitrin,0,1,464.0955,Synapt G2-Si,(-H),197.5
 CCN1C=C(C(=O)O)C(=O)C2=C1N=C(C)C=C2,Nalidixic acid,0,1,232.0848,Synapt G2-Si,(+H),145.7
@@ -3263,14 +3263,14 @@ C=C1CC23CCC4C(C)(C(=O)OC5OC(CO)C(O)C(O)C5O)CCCC4(C)C2CCC1(OC1OC(CO)C(O)C(OC2OC(C
 C=C1CC23CCC4C(C)(C(=O)OC5OC(CO)C(O)C(O)C5O)CCCC4(C)C2CCC1(OC1OC(CO)C(O)C(OC2OC(CO)C(O)C(O)C2O)C1OC1OC(CO)C(O)C(O)C1O)C3,Rebaudioside A tetramer_doubly charged,0,2,1931.8543,Synapt G2-Si,(-H),679.9
 [H]C12CC[C@]3(O[C@]4([H])O[C@]([H])(CO)[C@@]([H])(O)[C@]([H])(O[C@]5([H])O[C@]([H])(CO)[C@@]([H])(O)[C@]([H])(O)[C@@]5([H])O)[C@@]4([H])O[C@@]4([H])O[C@@]([H])(C)[C@]([H])(O)[C@@]([H])(O)[C@@]4([H])O)C[C@@]1(CCC1([H])[C@@]2(C)CCC[C@@]1(C)C(=O)O[C@]1([H])O[C@]([H])(CO)[C@@]([H])(O)[C@]([H])(O)[C@@]1([H])O)CC3=C,Rebaudioside C tetramer_doubly charged,0,2,1899.8645,Synapt G2-Si,(-H),668.2
 [H][C@@]1(O[C@@]2([H])[C@]([H])(O[C@]34CC[C@]5([H])[C@](CC[C@@]6([H])[C@@]5(C)CCC[C@@]6(C)C(=O)O)(CC3=C)C4)O[C@]([H])(CO)[C@@]([H])(O)[C@]2([H])O[C@]2([H])O[C@]([H])(CO)[C@@]([H])(O)[C@]([H])(O)[C@@]2([H])O)O[C@]([H])(CO)[C@@]([H])(O)[C@]([H])(O)[C@@]1([H])O,Rebaudioside B_hexamer_triply charged,0,3,1607.7487,Synapt G2-Si,(-H),790.9
-[H][C@@]12CCC3=CC(=O)C=C[C@]3(C)[C@@]1([H])CC[C@]1(C)C(=O)CC[C@@]21[H],"1,4-Androstadiene-3,17-dione (ADD)",0,1,284.1776,Synapt G2-Si,(+H),166.8
+[H][C@@]12CCC3=CC(=O)C=C[C@]3(C)[C@@]1([H])CC[C@]1(C)C(=O)CC[C@@]21[H],"1,4-Androstadiene-3,17-dioneï¿½(ADD)",0,1,284.1776,Synapt G2-Si,(+H),166.8
 [H][C@@]12CC[C@]3([H])[C@]([H])(CC[C@]4(C)[C@@](C)(O)[C@@]([H])(O)C[C@@]34[H])[C@@]1(C)CC1=CNN=C1C2,16B-hydroxystanozolol,0,1,344.2464,Synapt G2-Si,(+H),187.9
 [H][C@@]12CCC3=CC(=O)CC[C@]3(C)[C@@]1([H])CC[C@@]1(C)[C@@]2([H])CC[C@]1(C)O,Methyltestosterone,0,1,302.2246,Synapt G2-Si,(+H),175.6
 CC12C=CC3=C4CCC(=O)C=C4CCC3C1CCC2O,Trenbolone,0,1,270.162,Synapt G2-Si,(+H),163.6
 [H][C@@]12CC[C@]([H])(O)[C@@]1(C)C=CC1=C3CCC(=O)C=C3CC[C@]12[H],Trenbolone,0,1,270.162,Synapt G2-Si,(+H),161.2
 [H][C@@]12CCC3=CC(=O)CC[C@@]3([H])[C@@]1([H])CC[C@@]1(C)[C@@]2([H])CC[C@@]1([H])O,17a-Nortestosterone,0,1,274.1933,Synapt G2-Si,(+H),165.0
 [H][C@@]12CCC3=CC(=O)CC[C@]3([H])[C@@]1([H])CC[C@@]1(C)[C@@]2([H])CC[C@]1([H])O,Nandrolone,0,1,274.1933,Synapt G2-Si,(+H),166.9
-[H][C@@]12CCC3=C(Cl)C(=O)CC[C@@]3(C)[C@]1([H])CC[C@]1(C)C(=O)CC[C@@]21[H],"4-chloro-4-androst-3,17-dione (CLAD)",0,1,320.1543,Synapt G2-Si,(+H),172.8
+[H][C@@]12CCC3=C(Cl)C(=O)CC[C@@]3(C)[C@]1([H])CC[C@]1(C)C(=O)CC[C@@]21[H],"4-chloro-4-androst-3,17-dioneï¿½(CLAD)",0,1,320.1543,Synapt G2-Si,(+H),172.8
 CC(=O)C1=CC2=C(C=C1)SC1=CC=CC=C1N2CCCN(C)C,Acepromazine,0,1,326.1453,Synapt G2-Si,(+H),160.9
 O=C(CCCN1CCN(C2=CC=CC=N2)CC1)C1=CC=C(F)C=C1,Azaperone,0,1,327.1747,Synapt G2-Si,(+H),180.0
 [H][C@@]12C[C@]([H])(C)[C@](O)(C(=O)CO)[C@@]1(C)C[C@]([H])(O)[C@@]1(Cl)[C@@]2([H])CCC2=CC(=O)C=C[C@@]21C,Beclomethasone,0,1,408.1703,Synapt G2-Si,(+H),185.9
@@ -3317,14 +3317,14 @@ CC(C(=O)O)C1=CC(C(=O)C2=CC=CC=C2)=CC=C1,Ketoprofen,0,1,254.0943,Synapt G2-Si,(+H
 CC(C)(C)NCC(O)C1=CC(C(F)(F)F)=C(N)C(Cl)=C1,Mabuterol,0,1,310.106,Synapt G2-Si,(+H),168.1
 CN1CCN(C2=C(F)C=C3C(=O)C(C(=O)O)=CN4C3=C2OCN4C)CC1,Marbofloxacin,0,1,362.139,Synapt G2-Si,(+H),189.9
 CN1CCN(C2=C(F)C=C3C(=O)C(C(=O)O)=CN4C3=C2OCN4C)CC1,Marbofloxacin_protomer,0,1,362.139,Synapt G2-Si,(+H),178.6
-O=C(O)C1=CC=CC=C1Cl,Mefenamic acid,0,1,155.9978,Synapt G2-Si,(+H),151.2
+O=C(O)C1=CC=CC=C1Cl,Mefenamicï¿½acid,0,1,155.9978,Synapt G2-Si,(+H),151.2
 CC1=CN=C(N=C(O)C2=C(O)C3=CC=CC=C3S(=O)(=O)N2C)S1,Meloxicam,0,1,351.0347,Synapt G2-Si,(+H),175.4
 [H][C@@]12CCC3=CC(=O)C=C[C@]3(C)[C@@]1([H])CC[C@@]1(C)[C@@]2([H])CC[C@]1(C)O,Methandrostenolone,0,1,300.2089,Synapt G2-Si,(+H),176.9
 CC1=NC=C([N+](=O)[O-])N1CCO,Metronidazole,0,1,171.0644,Synapt G2-Si,(+H),125.3
 [H]/C(C1=NCCCN1C)=C(/[H])C1=C(C)C=CS1,Morantel,0,1,220.1034,Synapt G2-Si,(+H),150.8
 CCN1C=C(C(=O)O)C(=O)C2=C1N=C(C)C=C2,Nalidixic acid,0,1,232.0848,Synapt G2-Si,(+H),141.9
 [H][C@@](C)(C(=O)O)C1=CC2=CC=C(OC)C=C2C=C1,Naproxen,0,1,230.0943,Synapt G2-Si,(+H),147.4
-O=C(O)C1=C(NC2=CC=CC(C(F)(F)F)=C2)N=CC=C1,Niflumic acid,0,1,282.0616,Synapt G2-Si,(+H),156.8
+O=C(O)C1=C(NC2=CC=CC(C(F)(F)F)=C2)N=CC=C1,Niflumicï¿½acid,0,1,282.0616,Synapt G2-Si,(+H),156.8
 CCN1C=C(C(=O)O)C(=O)C2=CC(F)=C(N3CCNCC3)C=C21,Norfloxacine_protomer,0,1,319.1332,Synapt G2-Si,(+H),170.3
 CCN1C=C(C(=O)O)C(=O)C2=CC(F)=C(N3CCNCC3)C=C21,Norfloxacin,0,1,319.1332,Synapt G2-Si,(+H),185.5
 CCN1C=C(C(=O)O)C(=O)C2=CC3=C(C=C21)OCO3,Oxolinic acid,0,1,261.0637,Synapt G2-Si,(+H),147.8
@@ -3359,7 +3359,7 @@ CC1=NOC(NS(=O)(=O)C2=CC=C(N)C=C2)=C1C,Sulfisoxazole,0,1,267.0678,Synapt G2-Si,(+
 [H][C@@]12C[C@@]3([H])C(=C(O)C4=C(C=CC=C4O)[C@@]3(C)O)C(=O)[C@]1(O)C(O)=C(C(=N)O)C(=O)[C@@]2([H])N(C)C,Tetracycline,0,1,444.1533,Synapt G2-Si,(+H),196.3
 C1=CC=C2NC(C3=CSC=N3)=NC2=C1,Thiabendazole,0,1,201.0361,Synapt G2-Si,(+H),131.3
 [H][C@]1(C)[C@]([H])(O)[C@](C)(C=C)C[C@@]([H])(OC(=O)CSCCN(CC)CC)[C@@]2(C)[C@]3([H])C(=O)CC[C@@]13CC[C@@]2([H])C,Tiamulin,0,1,493.3226,Synapt G2-Si,(+H),219.4
-CC1=C(Cl)C=CC=C1NC1=CC=CC=C1C(=O)O,Tolfenamic acid,0,1,261.0557,Synapt G2-Si,(+H),153.1
+CC1=C(Cl)C=CC=C1NC1=CC=CC=C1C(=O)O,Tolfenamicï¿½acid,0,1,261.0557,Synapt G2-Si,(+H),153.1
 CC1=CC=C(C(=O)C2=CC=C(CC(=O)O)N2C)C=C1,Tolmetin,0,1,257.1052,Synapt G2-Si,(+H),156.9
 [H][C@]1(C)CN[C@]([H])(C)[C@@]([H])(O)[C@](C)(O)[C@@]([H])(CC)OC(=O)[C@]([H])(C)[C@@]([H])(O[C@@]2([H])C[C@@](C)(OC)[C@](O)(CNCCC)[C@]([H])(C)O2)[C@]([H])(C)[C@@]([H])(O[C@]2([H])O[C@]([H])(C)C[C@]([H])(N(C)C)[C@@]2([H])O)[C@](C)(O)C1,Tulathromycin,0,1,805.5663,Synapt G2-Si,(+H),286.1
 [H]/C1=C([H])\C(C)=C(/[H])[C@]([H])(CO[C@]2([H])O[C@]([H])(C)[C@@]([H])(O)[C@@]([H])(OC)[C@@]2([H])OC)[C@@]([H])(CC)OC(=O)C[C@@]([H])(O)[C@]([H])(C)[C@@]([H])(O[C@]2([H])O[C@]([H])(C)[C@@]([H])(O[C@@]3([H])C[C@@](C)(O)[C@@]([H])(O)[C@]([H])(C)O3)[C@]([H])(N(C)C)[C@@]2([H])O)[C@@]([H])(CC=O)C[C@@]([H])(C)C1=O,Tylosin,0,1,915.5191,Synapt G2-Si,(+H),314.9

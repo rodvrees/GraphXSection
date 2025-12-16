@@ -1,13 +1,30 @@
 """Data extraction functions for GraphXSection."""
 
+import sys
 import logging
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 from typing import Tuple, Dict, Any
+from GraphXSection.models.Eddy import get_embeddings
+from GraphXSection.feature_calc import get_feats
 
 logger = logging.getLogger(__name__)
+
+
+def _drop_constant_columns(df):
+    def is_constant(col):
+        # Drop NaNs, get unique values
+        unique_vals = col.dropna().unique()
+        # True if zero or one unique non-NaN value
+        return len(unique_vals) <= 1
+
+    cols_to_drop = [col for col in df.columns if is_constant(df[col])]
+    logger.info(
+        "Dropping constant columns: %s", cols_to_drop
+    )  # Log the columns being dropped
+    return df.drop(columns=cols_to_drop)
 
 
 def _stratified_split(
@@ -50,43 +67,41 @@ def _stratified_split(
     return df_train, df_valid, df_test
 
 
-def _get_adduct_OHE(df: pd.DataFrame) -> np.ndarray:
-    """One-hot encode the adducts.
+def _get_adduct_OHE(df: pd.DataFrame, force_OHE=True) -> np.ndarray:
+    """One-hot encode the adducts, ensuring consistent columns across datasets.
 
     Args:
-        df (pd.DataFrame): Dataframe with the adducts.
+        df (pd.DataFrame): DataFrame with the 'Adduct' column.
+        force_OHE (bool): If True, force one-hot encoding to include all expected adducts.
 
     Returns:
         np.ndarray: One-hot encoded adducts.
     """
+    expected_adducts = ["(+H)", "(-H)", "(+Na)", "(+HCOOH-H)", "(K+)"]
     adduct_ohe = pd.get_dummies(df["Adduct"], prefix="Adduct").astype(int)
+
+    if force_OHE:
+        # Ensure all expected adduct columns are present
+        for adduct in expected_adducts:
+            col_name = f"Adduct_{adduct}"
+            if col_name not in adduct_ohe.columns:
+                adduct_ohe[col_name] = 0
+
+        # Reorder columns to match expected order
+        ordered_columns = [f"Adduct_{a}" for a in expected_adducts]
+        adduct_ohe = adduct_ohe[ordered_columns]
+        print(f"Adduct OHE columns: {adduct_ohe.columns.tolist()}")
+
     return adduct_ohe.values
 
 
-def _get_global_feats(df: pd.DataFrame) -> np.ndarray:
-    """Extract global features from the dataframe.
-
-    Args:
-        df (pd.DataFrame): Dataframe with the data.
-
-    Returns:
-        np.ndarray: Global features.
-    """
-    feature_names = [
-        "Molecular Weight",
-        # "Van der Waals Volume",
-        # "Radius of Gyration",
-        "Asphericity",
-        "Dipole Moment",
-        # "Polarizability",
-    ]
-
-    global_feats = df[feature_names].values
-    return global_feats
-
-
 def _get_data(
-    df: pd.DataFrame, smiles_col="SMILES", train=False, scaler=None
+    df: pd.DataFrame,
+    smiles_col="SMILES",
+    train=False,
+    scaler=None,
+    embeddings=False,
+    threeD=False,
 ) -> Tuple[Dict[str, Any], MinMaxScaler]:
     """Extract data necessary for training from the dataframe.
 
@@ -103,54 +118,61 @@ def _get_data(
     df = df.dropna(
         subset=[
             smiles_col,
-            "Molecular Weight",
-            # "Van der Waals Volume",
-            # "Radius of Gyration",
-            "Asphericity",
-            "Dipole Moment",
-            # "Polarizability",
+            # "Polarizability Orca",
+            # "Dipole moment Orca",
             "Adduct",
             "CCS",
         ]
     )
     smiles = df[smiles_col].values
     adduct_OHE = _get_adduct_OHE(df)
-    # TODO: if no features in the dataframe, calculate them
-    global_feats = _get_global_feats(df)
 
-    logger.debug(f"First few features before scaling: {global_feats[:5]}")
+    if threeD:
+        feature_cols = df.columns
+        feature_id_idx = feature_cols.get_loc("Feature_Identifier")
+        calculated_features = df.iloc[:, feature_id_idx + 1 :]
 
-    # Min-max normalize the global features
-    if train:
-        scaler = MinMaxScaler()
-        global_feats = scaler.fit_transform(global_feats)
-        logger.debug(f"First few features after scaling: {global_feats[:5]}")
-        logger.debug(
-            f"Scaler fitted: {scaler}, which has seen {scaler.n_samples_seen_} samples"
+    logger.info("df.columns: %s", df.columns.to_list())
+
+    # all_feats is calculated features + adduct OHE
+    if threeD:
+        all_feats = np.concatenate(
+            (
+                adduct_OHE,
+                calculated_features.values,
+            ),
+            axis=1,
         )
+
     else:
-        if scaler is None:
-            raise ValueError("Scaler must be provided when train=False")
-
-        logger.debug(
-            f"Features are scaled using {scaler}, which has seen {scaler.n_samples_seen_} samples"
-        )
-        global_feats = scaler.transform(global_feats)
-        logger.debug(f"First few features after scaling: {global_feats[:5]}")
-
-    # Concatenate the global features and the one-hot encoded adducts
-    all_feats = np.concatenate([adduct_OHE, global_feats], axis=1)
-    logger.debug(f"First few features after concatenation: {all_feats[:5]}")
+        all_feats = adduct_OHE
+    logger.info(f"all_feats shape: {all_feats.shape}")
 
     y = df["CCS"].values
 
+    # Scale the features if threeD
+    if threeD:
+        if train:
+            scaler = MinMaxScaler()
+            all_feats = scaler.fit_transform(all_feats)
+        else:
+            all_feats = scaler.transform(all_feats)
+
     logger.info(f"Data shape: {smiles.shape}, {all_feats.shape}, {y.shape}")
 
-    data = {
-        "smiles": smiles,
-        "global_feats": all_feats,
-        "y": y,
-    }
+    if not embeddings:
+        data = {
+            "smiles": smiles,
+            "global_feats": all_feats,
+            "y": y,
+        }
+    else:
+        data = {
+            "smiles": smiles,
+            "global_feats": all_feats,
+            "y": y,
+            "embeddings": df["embeddings"].values,
+        }
     return data, scaler if train else None  # Return scaler only if train=True
 
 
@@ -172,7 +194,47 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
     """
 
     logger.info("Reading data file: %s", config["data_path"])
+    # # Sample first 20 rows for testing
     data = pd.read_csv(config["data_path"])
+
+    if config["model"].get("type", None) == "Ginny3D":
+        #     ions = data["Adduct"].unique()
+        #     logger.debug(ions)
+        #     features_df = get_feats(
+        #         data, config, ions=ions, RDKit=True, mordred=True, mordred_3d=True
+        #     )
+        #     # features_df = features_df.fillna(0.0)
+        #     logger.debug(features_df.index)
+
+        #     data["Feature_Identifier"] = data.apply(
+        #         lambda x: str(x.name) + "|" + x["Chemical Name"], axis=1
+        #     )
+        #     logger.debug(data["Feature_Identifier"])
+        #     data = pd.merge(
+        #         data,
+        #         features_df,
+        #         left_on="Feature_Identifier",
+        #         right_index=True,
+        #     )
+        #     if config.get("save_dfs", False):
+        #         data.to_csv(
+        #             f"{config['output_path']}/{config['run_name']}_features_df.csv",
+        #             index=False,
+        #         )
+
+        data = pd.read_csv(config["data_path"])
+        data.drop(["delta_to_second_best"], axis=1, inplace=True)
+        # Remove columns where all values are the same
+        data.replace(-1000, np.nan, inplace=True)
+        data = _drop_constant_columns(data)
+        # Drop columns with NaN values
+        logger.info("Dropping columns with NaN values")
+        logger.debug(
+            "Columns with NaN values: %s", len(data.columns[data.isna().any()])
+        )
+        data.dropna(axis=1, inplace=True)
+        logger.info("Dropped columns with NaN values")
+        logger.debug("Remaining columns: %s", len(data.columns))
 
     df_train, df_valid, df_test = _stratified_split(
         data,
@@ -180,6 +242,16 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
         valid_split=config["valid_split"],
         stratify_col="Adduct",
     )
+
+    if config["model"].get("type", None) == "Eddy":
+        df_train = get_embeddings(df_train, config)
+        df_valid = get_embeddings(df_valid, config)
+        df_test = get_embeddings(df_test, config)
+        df_train["Adduct_OHE"] = _get_adduct_OHE(df_train).tolist()
+        df_valid["Adduct_OHE"] = _get_adduct_OHE(df_valid).tolist()
+        df_test["Adduct_OHE"] = _get_adduct_OHE(df_test).tolist()
+
+        return df_train, df_valid, df_test, None, None
 
     if config.get("save_dfs", False):
         df_train.to_csv(f"{config['output_path']}/train_df.csv", index=False)
@@ -192,7 +264,11 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
 
     logger.info("Extracting training data")
     train_data, scaler = _get_data(
-        df_train, smiles_col=config.get("smiles_col", "SMILES"), train=True
+        df_train,
+        smiles_col=config.get("smiles_col", "SMILES"),
+        train=True,
+        embeddings=True if config["model"].get("type", None) == "Eddy" else False,
+        threeD=True if config["model"].get("type", None) == "Ginny3D" else False,
     )
 
     logger.info("Extracting validation and test data using fitted scaler")
@@ -201,12 +277,16 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
         smiles_col=config.get("smiles_col", "SMILES"),
         train=False,
         scaler=scaler,
+        embeddings=True if config["model"].get("type", None) == "Eddy" else False,
+        threeD=True if config["model"].get("type", None) == "Ginny3D" else False,
     )
     test_data, _ = _get_data(
         df_test,
         smiles_col=config.get("smiles_col", "SMILES"),
         train=False,
         scaler=scaler,
+        embeddings=True if config["model"].get("type", None) == "Eddy" else False,
+        threeD=True if config["model"].get("type", None) == "Ginny3D" else False,
     )
 
     logger.info("Data extraction complete")

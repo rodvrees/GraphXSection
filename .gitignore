@@ -3,7 +3,7 @@ configs/
 # data/
 predictions/
 wandb/
-
+CCS_hybrid_Robbin/
 hyperparams_optimalization.py
 feature_optimalization.py
 
@@ -12,3 +12,16 @@ inspect_saliency.ipynb
 preprocess_data.ipynb
 
 __pycache__/
+.archive/
+.vscode/
+CCSBase_eval/
+class_generalization_eval/
+eupa_evals/
+eupa_figs/
+data/
+graphamole/
+lightning_logs/
+sweep_configs/
+outputs/
+protomer_eval/
+PFAS_eval/
