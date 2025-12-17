@@ -32,6 +32,8 @@ def build_dataset_from_df(
     adduct_encoder: AdductEncoder | None = None,
     one_hot_encode_feats: bool = False,
     feature_config_path: Optional[Path] = None,
+    use_adduct_virtual_node: bool = False,
+    adduct_feature_dim: int = 16,
 ) -> Tuple[GraphXSectionDataset, int]:
     """Create GraphXSectionDataset from a DataFrame.
 
@@ -45,6 +47,8 @@ def build_dataset_from_df(
         adduct_encoder: Pre-fitted adduct encoder
         one_hot_encode_feats: Whether to use one-hot encoding for features
         feature_config_path: Path to custom feature configuration JSON
+        use_adduct_virtual_node: Whether to add adduct as virtual node
+        adduct_feature_dim: Dimension of adduct virtual node features
 
     Returns:
         Tuple of (dataset, adduct_ohe_dimension)
@@ -53,13 +57,23 @@ def build_dataset_from_df(
     smiles = df[smiles_col].tolist()
     adducts = df[adduct_col].tolist()
 
-    if adduct_encoder is None:
-        logger.info("AdductEncoder not provided; fitting on provided DataFrame")
-        adduct_encoder = AdductEncoder().fit([df[adduct_col]])
+    if not use_adduct_virtual_node:
+        if adduct_encoder is None:
+            logger.info("AdductEncoder not provided; fitting on provided DataFrame")
+            adduct_encoder = AdductEncoder().fit([df[adduct_col]])
 
-    adduct_ohe = adduct_encoder.transform(df[adduct_col])  # (N, V)
-    logger.debug(f"Adduct OHE shape: {adduct_ohe.shape}")
-    logger.debug(f"Adduct OHE sample:\n{adduct_ohe[:5]}")
+        adduct_ohe = adduct_encoder.transform(df[adduct_col])  # (N, V)
+        logger.debug(f"Adduct OHE shape: {adduct_ohe.shape}")
+        logger.debug(f"Adduct OHE sample:\n{adduct_ohe[:5]}")
+        adduct_ohe_dim = adduct_ohe.shape[1]
+    else:
+        # When using virtual nodes, adduct info is in the graph, not global features
+        logger.info(
+            "Using virtual nodes for adduct representation; no global features needed"
+        )
+        adduct_ohe = None
+        adduct_ohe_dim = 0
+
     targets = df["CCS"].values
 
     dataset = GraphXSectionDataset(
@@ -69,8 +83,9 @@ def build_dataset_from_df(
         targets,
         one_hot_encode=one_hot_encode_feats,
         feature_config_path=feature_config_path,
+        use_adduct_virtual_node=use_adduct_virtual_node,
+        adduct_feature_dim=adduct_feature_dim,
     )
-    adduct_ohe_dim = adduct_ohe.shape[1]
     dataset.summarize()
     return dataset, adduct_ohe_dim
 
@@ -129,6 +144,8 @@ def build_datasets_from_separate_files(
     adduct_col: str = "Adduct",
     one_hot_encode_feats: bool = False,
     feature_config_path: Optional[Path] = None,
+    use_adduct_virtual_node: bool = False,
+    adduct_feature_dim: int = 16,
 ) -> Tuple[Subset, Subset, Subset, pd.DataFrame, pd.DataFrame, pd.DataFrame, int]:
     """Create datasets from separate train/valid/test CSV files.
 
@@ -143,6 +160,8 @@ def build_datasets_from_separate_files(
         adduct_col: Column name for adduct information
         one_hot_encode_feats: Whether to use one-hot encoding for features
         feature_config_path: Path to custom feature configuration JSON
+        use_adduct_virtual_node: Whether to add adduct as virtual node
+        adduct_feature_dim: Dimension of adduct virtual node features
 
     Returns:
         Tuple of (train_subset, valid_subset, test_subset, df_train, df_valid, df_test, adduct_ohe_dim)
@@ -174,6 +193,8 @@ def build_datasets_from_separate_files(
         adduct_encoder=encoder,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
+        use_adduct_virtual_node=use_adduct_virtual_node,
+        adduct_feature_dim=adduct_feature_dim,
     )
 
     valid_dataset, _ = build_dataset_from_df(
@@ -183,6 +204,8 @@ def build_datasets_from_separate_files(
         adduct_encoder=encoder,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
+        use_adduct_virtual_node=use_adduct_virtual_node,
+        adduct_feature_dim=adduct_feature_dim,
     )
 
     test_dataset, _ = build_dataset_from_df(
@@ -192,6 +215,8 @@ def build_datasets_from_separate_files(
         adduct_encoder=encoder,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
+        use_adduct_virtual_node=use_adduct_virtual_node,
+        adduct_feature_dim=adduct_feature_dim,
     )
 
     # Create Subset objects with full indices (since each dataset is already the correct split)

@@ -287,10 +287,6 @@ def main(
             f"Inference mode enabled. Test CSV: {test_csv or config.get('test_data_path')}, model: {inference_model or base_model}"
         )
 
-    # Import after logging setup to avoid pytorch logging conflicts
-    from GraphXSection_torch.data_extract import data_extract
-    from GraphXSection_torch.data_extract import GraphXSectionDataset
-
     from GraphXSection_torch.train_lightning import (
         train_lightning_GraphXSection,
     )
@@ -360,6 +356,10 @@ def main(
             adduct_col=config.get("adduct_col", "Adduct"),
             one_hot_encode_feats=config.get("one_hot_encode_feats", False),
             feature_config_path=Path(feature_config) if feature_config else None,
+            use_adduct_virtual_node=config["model"].get(
+                "use_adduct_virtual_node", False
+            ),
+            adduct_feature_dim=config["model"].get("adduct_feature_dim", 16),
         )
     else:
         log.info("Using single dataset file with automatic splitting")
@@ -376,6 +376,10 @@ def main(
             adduct_encoder=encoder,
             one_hot_encode_feats=config.get("one_hot_encode_feats", False),
             feature_config_path=Path(feature_config) if feature_config else None,
+            use_adduct_virtual_node=config["model"].get(
+                "use_adduct_virtual_node", False
+            ),
+            adduct_feature_dim=config["model"].get("adduct_feature_dim", 16),
         )
 
         train_data, valid_data, test_data, df_train, df_valid, df_test = (

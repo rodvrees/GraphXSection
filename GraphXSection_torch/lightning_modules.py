@@ -218,6 +218,8 @@ class GraphXSectionLightningModule(pl.LightningModule):
                 node_feature_sizes=node_feature_sizes,
                 edge_feature_sizes=edge_feature_sizes,
                 global_feature_sizes=global_feature_sizes,
+                use_adduct_virtual_node=model_cfg.get("use_adduct_virtual_node", False),
+                adduct_feature_dim=model_cfg.get("adduct_feature_dim", 16),
             )
         elif model_type == "Ginny":
             self.model = GinnyModel(

@@ -384,6 +384,8 @@ class MoleculeIon:
         self,
         featurizer_collection: FeaturizerCollection | None = None,
         one_hot_encode: bool = False,
+        add_virtual_node: bool = False,
+        virtual_node_features: np.ndarray | None = None,
     ) -> Data:
         """
         Return a :py:class:`torch_geometric.data.Data` object for the molecule.
@@ -392,18 +394,26 @@ class MoleculeIon:
         ----------
         featurizer_collection
             Collection of featurizers for atoms and bonds. Uses all featurizers by default.
+        one_hot_encode
+            Whether to one-hot encode features.
+        add_virtual_node
+            Whether to add a virtual node (e.g., for adduct representation).
+        virtual_node_features
+            Features for the virtual node. If None and add_virtual_node=True,
+            uses zeros. Shape: (num_features,)
 
         """
         if featurizer_collection is None:
             featurizer_collection = ALL_FEATURIZERS
 
         mol = self.get_mol()
+        num_atoms = mol.GetNumAtoms()
 
-        atom_features_list: list[list[int]] = []
-        edge_indices: list[list[int]] = []
-        edge_features_list: list[list[int]] = []
+        atom_features_list = []
+        edge_indices = []
+        edge_features_list = []
 
-        for atom_idx in range(mol.GetNumAtoms()):
+        for atom_idx in range(num_atoms):
             atom = mol.GetAtomWithIdx(atom_idx)
             atom_features_list.append(
                 featurizer_collection.get_atom_features(
@@ -418,14 +428,101 @@ class MoleculeIon:
             bond_features = featurizer_collection.get_bond_features(bond)
             edge_features_list.extend([bond_features, bond_features])
 
-        # Use float features so downstream MLPs can learn meaningful combinations
-        x = torch.tensor(np.array(atom_features_list), dtype=torch.long)
+        # Track edge types for heterogeneous processing
+        edge_types = []
+
+        # Add virtual node if requested
+        if add_virtual_node:
+            # Fail-fast: require explicit virtual node features
+            if virtual_node_features is None:
+                raise ValueError(
+                    "Virtual node requested (add_virtual_node=True) but no features provided. "
+                    "Please provide explicit adduct features via virtual_node_features parameter."
+                )
+            
+            virtual_idx = num_atoms  # Index of virtual node
+
+            # Add virtual node features (keep raw, NO padding/truncation)
+            # Keep raw adduct features as-is - model will handle projection
+            virtual_node_features = np.array(
+                virtual_node_features, dtype=np.float32
+            ).reshape(-1)
+
+            # Connect virtual node to all atoms (bidirectional)
+            num_virtual_edges = 0
+            for atom_idx in range(num_atoms):
+                # Virtual -> Atom
+                edge_indices.append([virtual_idx, atom_idx])
+                edge_types.append(1)  # Type 1 = adduct edge
+                # Atom -> Virtual
+                edge_indices.append([atom_idx, virtual_idx])
+                edge_types.append(1)  # Type 1 = adduct edge
+                num_virtual_edges += 2
+
+            # Create virtual edge features (zeros to distinguish from chemical bonds)
+            if len(edge_features_list) > 0:
+                virtual_edge_features = np.zeros_like(edge_features_list[0])
+            else:
+                # No bonds in molecule, use default size
+                virtual_edge_features = np.zeros(4, dtype=np.int64)
+
+            # Add edge features for virtual edges
+            for _ in range(num_virtual_edges):
+                edge_features_list.append(virtual_edge_features)
+
+        # Mark bond edges as type 0 (must be done after virtual edges are added)
+        num_bond_edges = len(edge_indices) - (
+            len(edge_types) if add_virtual_node else 0
+        )
+        edge_types = [0] * num_bond_edges + edge_types  # Type 0 = bond edge
+
+        # Handle heterogeneous node features (atoms vs virtual node)
+        if add_virtual_node:
+            # Store raw features separately for type-specific encoding
+            # Atoms: categorical indices (will be embedded) -> long
+            x_atoms = torch.tensor(np.array(atom_features_list), dtype=torch.long)
+            # Virtual node: continuous features (will be passed through MLP) -> float32
+            x_vnode = torch.tensor(
+                virtual_node_features, dtype=torch.float32
+            ).unsqueeze(0)
+
+            # Create node type indicators: 0 = atom, 1 = virtual node
+            node_types = torch.zeros(num_atoms + 1, dtype=torch.long)
+            node_types[virtual_idx] = 1
+        else:
+            x_atoms = torch.tensor(np.array(atom_features_list), dtype=torch.long)
+            x_vnode = None
+            node_types = torch.zeros(len(atom_features_list), dtype=torch.long)
+
+        # Edge attributes: categorical (bond types) -> long for embedding
         edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
         edge_attr = torch.tensor(np.array(edge_features_list), dtype=torch.long)
+        edge_types_tensor = torch.tensor(edge_types, dtype=torch.long)
 
-        # Return only the molecular graph; global/adduct features are handled by the dataset
-        # to ensure consistency with the fitted AdductEncoder.
-        return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+        # Keep chemical edge attributes unchanged; keep edge_types separate.
+        # Edge-type conditioning will be handled in Sigma.py by embedding edge_types
+        # and adding it to edge_emb.
+
+        # Store metadata about virtual node
+        data = Data(
+            x_atoms=x_atoms,
+            x_vnode=x_vnode,
+            node_types=node_types,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            edge_types=edge_types_tensor,
+        )
+
+        if add_virtual_node:
+            data.has_virtual_node = True
+            data.virtual_node_idx = virtual_idx
+            data.num_real_atoms = num_atoms
+            data.num_nodes = num_atoms + 1
+        else:
+            data.has_virtual_node = False
+            data.num_nodes = num_atoms
+
+        return data
 
 
 class GraphXSectionDataset(Dataset):
@@ -436,17 +533,21 @@ class GraphXSectionDataset(Dataset):
         'global_feats': float32 [F] (e.g., adduct OHE),
         'target': float32 [1]
     }
+
+    Supports optional virtual node representation for adducts.
     """
 
     def __init__(
         self,
         smiles_list: List[str],
         adduct_list: List[str],
-        global_feats: np.ndarray,
+        global_feats: np.ndarray | None,
         targets: np.ndarray,
         featurizer_collection: FeaturizerCollection | None = None,
         one_hot_encode: bool = False,
         feature_config_path: Path | None = None,
+        use_adduct_virtual_node: bool = False,
+        adduct_feature_dim: int = 16,
     ):
         """
         Store raw inputs; graphs are featurized on demand in get().
@@ -455,18 +556,29 @@ class GraphXSectionDataset(Dataset):
             smiles_list: List of SMILES strings.
             adduct_list: List of adduct strings aligned with smiles_list.
             global_feats: Array of global features (e.g., adduct OHE), shape (N, F).
+                         Can be None when use_adduct_virtual_node=True.
             targets: Array of targets, shape (N,) or (N,1).
             featurizer_collection: Custom featurizer collection.
             one_hot_encode: Whether to use one-hot encoding for features.
             feature_config_path: Path to custom feature configuration JSON.
+            use_adduct_virtual_node: Whether to add adduct as virtual node.
+            adduct_feature_dim: Dimension of adduct virtual node features.
         """
         super().__init__()
-        if not (
-            len(smiles_list) == len(adduct_list) == len(global_feats) == len(targets)
-        ):
-            raise ValueError(
-                "smiles, adducts, global_feats, and targets must have equal length"
-            )
+        # When using virtual nodes, global_feats can be None
+        if global_feats is not None:
+            if not (
+                len(smiles_list)
+                == len(adduct_list)
+                == len(global_feats)
+                == len(targets)
+            ):
+                raise ValueError(
+                    "smiles, adducts, global_feats, and targets must have equal length"
+                )
+        else:
+            if not (len(smiles_list) == len(adduct_list) == len(targets)):
+                raise ValueError("smiles, adducts, and targets must have equal length")
 
         # Setup featurizer collection with optional custom config
         if featurizer_collection is not None:
@@ -487,10 +599,27 @@ class GraphXSectionDataset(Dataset):
             self.featurizer_collection = ALL_FEATURIZERS
 
         self._molecule_list = self._load_molecules(smiles_list, adduct_list)
-        self.global_feats = torch.as_tensor(global_feats, dtype=torch.float32)
+        self.global_feats = (
+            torch.as_tensor(global_feats, dtype=torch.float32)
+            if global_feats is not None
+            else None
+        )
         t = torch.as_tensor(targets, dtype=torch.float32)
         self.targets = t.view(-1, 1) if t.ndim == 1 else t
         self.one_hot_encode = one_hot_encode
+        self.use_adduct_virtual_node = use_adduct_virtual_node
+        self.adduct_list = adduct_list
+
+        # Setup adduct feature extractor if using virtual nodes
+        if self.use_adduct_virtual_node:
+            from GraphXSection_torch.adduct_features import AdductFeatureExtractor
+
+            self.adduct_extractor = AdductFeatureExtractor(
+                feature_dim=adduct_feature_dim
+            )
+            logger.info(
+                f"Using adduct virtual nodes with {adduct_feature_dim} features"
+            )
 
     def __len__(self) -> int:
         return len(self._molecule_list)
@@ -505,60 +634,231 @@ class GraphXSectionDataset(Dataset):
         return [MoleculeIon(smi, add) for smi, add in zip(smiles_list, adduct_list)]
 
     def get(self, idx: int) -> Dict[str, Any]:
+        # Extract adduct features if using virtual node
+        virtual_node_features = None
+        if self.use_adduct_virtual_node:
+            adduct = self.adduct_list[idx]
+            virtual_node_features = self.adduct_extractor.extract_features(adduct)
+
+        # Get molecular graph from MoleculeIon with virtual node support
         graph: Data = self._molecule_list[idx].get_data(
-            self.featurizer_collection, one_hot_encode=self.one_hot_encode
+            featurizer_collection=self.featurizer_collection,
+            one_hot_encode=self.one_hot_encode,
+            add_virtual_node=self.use_adduct_virtual_node,
+            virtual_node_features=virtual_node_features,
         )
+
         return {
             "graph": graph,
-            "global_feats": self.global_feats[idx],
+            "global_feats": (
+                self.global_feats[idx]
+                if self.global_feats is not None
+                else torch.zeros(0)
+            ),
             "target": self.targets[idx],
         }
 
     def summarize(self):
-        """Print a summary of the dataset."""
-        logger.info("--------------Dataset Summary--------------")
-        logger.info(f"Dataset size: {len(self)} samples")
-        logger.info(f"Global features shape: {self.global_feats.shape}")
-        logger.info(f"Targets shape: {self.targets.shape}")
-        logger.info("-----------------------------------------")
-        first = self[0]
-        # Print smiles if available
-        if isinstance(self._molecule_list[0].input_smiles, str):
-            logger.info(f"First SMILES: {self._molecule_list[0].input_smiles}")
-        else:
-            logger.info("First SMILES: Not available")
+        """Print a comprehensive summary of the dataset including virtual node information."""
+        logger.info("=" * 70)
+        logger.info("DATASET SUMMARY".center(70))
+        logger.info("=" * 70)
 
-        # Print adduct if available
-        if self._molecule_list[0].adduct is not None:
-            logger.info(f"First Adduct: {self._molecule_list[0].adduct}")
+        # Basic dataset info
+        logger.info(f"Dataset size: {len(self)} samples")
+        if self.global_feats is not None:
+            logger.info(f"Global features shape: {self.global_feats.shape}")
         else:
-            logger.info("First Adduct: Not available")
-        logger.info("-----------------------------------------")
+            logger.info("Global features: None (using virtual nodes for adduct)")
+        logger.info(f"Targets shape: {self.targets.shape}")
         logger.info(
-            f"First graph nodes: {first['graph'].num_nodes}, edges: {first['graph'].num_edges}"
+            f"Virtual node mode: {'ENABLED' if self.use_adduct_virtual_node else 'DISABLED'}"
         )
-        logger.info(f"First graph node features shape: {first['graph'].x.shape}")
-        logger.info(f"First graph node features: {first['graph'].x}")
-        ea = getattr(first["graph"], "edge_attr", None)
-        logger.info(
-            f"First graph edge features shape: {tuple(ea.shape) if ea is not None else None}"
-        )
-        logger.info(f"First graph edge features: {first['graph'].edge_attr}")
-        logger.info(f"First global features shape: {first['global_feats'].shape}")
-        logger.info(f"First global features: {first['global_feats']}")
-        logger.info(f"First target: {first['target']}")
-        logger.info("-----------------------------------------")
+        if self.use_adduct_virtual_node:
+            logger.info(
+                f"  → Adduct feature dimension: {self.adduct_extractor.feature_dim}"
+            )
+            logger.info("  → Adduct encoded in virtual node (NOT in global features)")
+
+        logger.info("-" * 70)
+        logger.info("FIRST SAMPLE DETAILS".center(70))
+        logger.info("-" * 70)
+
+        first = self[0]
+        graph = first["graph"]
+
+        # Molecule information
+        if isinstance(self._molecule_list[0].input_smiles, str):
+            logger.info(f"SMILES: {self._molecule_list[0].input_smiles}")
+        else:
+            logger.info("SMILES: Not available")
+
+        if self._molecule_list[0].adduct is not None:
+            logger.info(f"Adduct: {self._molecule_list[0].adduct}")
+        else:
+            logger.info("Adduct: Not available")
+
+        logger.info(f"Target (CCS): {first['target'].item():.2f}")
+
+        logger.info("-" * 70)
+        logger.info("GRAPH STRUCTURE".center(70))
+        logger.info("-" * 70)
+
+        # Virtual node specific information
+        has_vnode = getattr(graph, "has_virtual_node", False)
+
+        # Calculate total nodes correctly for both formats
+        if has_vnode:
+            num_real_atoms = getattr(graph, "num_real_atoms", graph.x_atoms.shape[0])
+            total_nodes = num_real_atoms + 1  # atoms + virtual node
+            vnode_idx = getattr(graph, "virtual_node_idx", None)
+            logger.info(
+                f"Total nodes: {total_nodes} ({num_real_atoms} atoms + 1 virtual node)"
+            )
+            logger.info(f"Total edges: {graph.num_edges}")
+            logger.info(f"  → Real atoms: {num_real_atoms}")
+            logger.info(f"  → Virtual nodes: 1")
+            logger.info(f"  → Virtual node index: {vnode_idx}")
+
+            # Node type breakdown
+            node_types = getattr(graph, "node_types", None)
+            if node_types is not None:
+                num_atom_nodes = (node_types == 0).sum().item()
+                num_vnode_nodes = (node_types == 1).sum().item()
+                logger.info(
+                    f"  → Node types: {num_atom_nodes} atoms (type 0), {num_vnode_nodes} virtual (type 1)"
+                )
+
+            # Edge type breakdown
+            edge_types = getattr(graph, "edge_types", None)
+            if edge_types is not None:
+                num_bond_edges = (edge_types == 0).sum().item()
+                num_virtual_edges = (edge_types == 1).sum().item()
+                logger.info(
+                    f"  → Edge types: {num_bond_edges} bonds (type 0), {num_virtual_edges} virtual (type 1)"
+                )
+                logger.info(
+                    f"  → Virtual edges per atom: {num_virtual_edges // num_real_atoms} (bidirectional)"
+                )
+        else:
+            # No virtual node - use standard num_nodes
+            logger.info(f"Total nodes: {graph.num_nodes}")
+            logger.info(f"Total edges: {graph.num_edges}")
+            logger.info("  → Virtual node: NOT PRESENT")
+
+        logger.info("-" * 70)
+        logger.info("NODE FEATURES".center(70))
+        logger.info("-" * 70)
+
+        # Node features - handle both old and new formats
+        if hasattr(graph, "x_atoms") and graph.x_atoms is not None:
+            logger.info(f"Atom features (x_atoms):")
+            logger.info(f"  → Shape: {graph.x_atoms.shape}")
+            logger.info(f"  → Data type: {graph.x_atoms.dtype}")
+            logger.info(
+                f"  → Sample (first atom, first 5 features): {graph.x_atoms[0][:5].tolist()}"
+            )
+
+            if hasattr(graph, "x_vnode") and graph.x_vnode is not None:
+                logger.info(f"Virtual node features (x_vnode):")
+                logger.info(f"  → Shape: {graph.x_vnode.shape}")
+                logger.info(f"  → Data type: {graph.x_vnode.dtype}")
+                logger.info(f"  → Feature dimension: {graph.x_vnode.shape[1]}")
+                logger.info(
+                    f"  → Sample (first 5 features): {graph.x_vnode[0][:5].tolist()}"
+                )
+                logger.info(
+                    f"  → Purpose: Encodes adduct information (charge, polarity, mass, composition)"
+                )
+                if self.use_adduct_virtual_node and hasattr(self, "adduct_extractor"):
+                    logger.info(
+                        f"  → Extraction method: {self.adduct_extractor.__class__.__name__}"
+                    )
+                    logger.info(
+                        "  → Features include: charge, polarity, mass delta, elemental composition"
+                    )
+        elif hasattr(graph, "x") and graph.x is not None:
+            logger.info(f"Node features (x - legacy format):")
+            logger.info(f"  → Shape: {graph.x.shape}")
+            logger.info(f"  → Data type: {graph.x.dtype}")
+        else:
+            logger.warning("No node features found (neither x nor x_atoms)")
+
+        logger.info("-" * 70)
+        logger.info("EDGE FEATURES".center(70))
+        logger.info("-" * 70)
+
+        edge_attr = getattr(graph, "edge_attr", None)
+        if edge_attr is not None:
+            logger.info(f"Edge attributes (edge_attr):")
+            logger.info(f"  → Shape: {edge_attr.shape}")
+            logger.info(f"  → Data type: {edge_attr.dtype}")
+
+            # Show edge type encoding if present
+            if (
+                has_vnode and edge_attr.shape[1] > 4
+            ):  # Assuming base edge features are 4-dim
+                logger.info(
+                    f"  → Note: Edge type encoded as additional feature (last column)"
+                )
+        else:
+            logger.info("No edge attributes found")
+
+        logger.info("-" * 70)
+        logger.info("GLOBAL FEATURES".center(70))
+        logger.info("-" * 70)
+
+        if first["global_feats"].numel() > 0:
+            logger.info(f"Global features shape: {first['global_feats'].shape}")
+            logger.info(
+                f"Global features sample (first 5): {first['global_feats'][:5].tolist()}"
+            )
+            if not self.use_adduct_virtual_node:
+                logger.info("  → Note: Adduct information encoded in global features")
+        else:
+            logger.info("Global features: None (empty tensor)")
+            logger.info(
+                "  → Note: Adduct information encoded in virtual node features (NOT in global branch)"
+            )
+
+        logger.info("=" * 70)
 
 
 def collate_fn(batch):
-    """Batch dicts of graphs, global features, and targets."""
+    """Batch dicts of graphs, global features, and targets.
+
+    Handles both old-style (x) and new-style (x_atoms, x_vnode) data formats.
+    When virtual nodes are used, global_feats will be None.
+    """
     graphs = [item["graph"] for item in batch]
-    global_feats = torch.stack([item["global_feats"] for item in batch])
+
+    # Check if global_feats are actually used (non-empty)
+    first_global = batch[0]["global_feats"]
+    if first_global.numel() > 0:
+        global_feats = torch.stack([item["global_feats"] for item in batch])
+    else:
+        # Virtual nodes are being used, no global features needed
+        global_feats = None
+
     targets = torch.stack([item["target"] for item in batch])
     if targets.ndim == 1:
         targets = targets.unsqueeze(-1)
 
     batched_graphs = Batch.from_data_list(graphs)
+
+    # Handle backward compatibility: if graphs have old 'x' attribute, copy to x_atoms
+    if hasattr(batched_graphs, "x") and not hasattr(batched_graphs, "x_atoms"):
+        batched_graphs.x_atoms = batched_graphs.x
+        batched_graphs.x_vnode = None
+        batched_graphs.node_types = torch.zeros(
+            batched_graphs.x.size(0), dtype=torch.long, device=batched_graphs.x.device
+        )
+        batched_graphs.edge_types = torch.zeros(
+            batched_graphs.edge_index.size(1),
+            dtype=torch.long,
+            device=batched_graphs.edge_index.device,
+        )
+
     return {"graph": batched_graphs, "global_feats": global_feats, "target": targets}
 
 
