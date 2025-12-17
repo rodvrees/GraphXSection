@@ -44,7 +44,11 @@ class SigmaModel(nn.Module):
         else:
             self.edge_dim = edge_feature_sizes
 
-        self.global_dim = global_feature_sizes
+        # Global features handling
+        self.global_raw_dim = int(global_feature_sizes) if global_feature_sizes else 0
+        self.global_emb_dim = int(
+            m.get("global_emb_dim", 16)
+        )  # Embedding dimension for descriptors
         self.one_hot_encode_feats = config.get("one_hot_encode_feats", False)
 
         # Model hyperparameters (matching SigmaCCS defaults)
@@ -83,7 +87,8 @@ class SigmaModel(nn.Module):
         logger.info(f"    - One-hot encode: {self.one_hot_encode_feats}")
         logger.info(f"    - Node dim: {self.node_dim}")
         logger.info(f"    - Edge dim: {self.edge_dim}")
-        logger.info(f"    - Global dim: {self.global_dim}")
+        logger.info(f"    - Global raw dim: {self.global_raw_dim}")
+        logger.info(f"    - Global emb dim: {self.global_emb_dim}")
         logger.info("=" * 80)
 
         # Handle embeddings vs projections for different encoding types
@@ -155,9 +160,25 @@ class SigmaModel(nn.Module):
         else:
             self.pool = global_add_pool
 
-        # Dense prediction head (matching SigmaCCS architecture)
+        # Global feature encoder (for adduct descriptors)
+        if self.global_raw_dim > 0:
+            self.global_encoder = nn.Sequential(
+                nn.Linear(self.global_raw_dim, self.global_emb_dim * 2),
+                nn.ReLU(),
+                nn.Dropout(self.dropout),
+                nn.Linear(self.global_emb_dim * 2, self.global_emb_dim),
+            )
+            logger.info(
+                f"Global encoder MLP: {self.global_raw_dim} -> {self.global_emb_dim * 2} -> {self.global_emb_dim}"
+            )
+        else:
+            self.global_encoder = None
+
         dense_layers = []
-        input_dim = self.ecc_channels + self.global_dim
+        # Input: pooled graph embedding + encoded global features
+        input_dim = self.ecc_channels + (
+            self.global_emb_dim if self.global_raw_dim > 0 else 0
+        )
 
         for i in range(self.num_dense_layers):
             dense_layers.extend(
@@ -267,13 +288,18 @@ class SigmaModel(nn.Module):
             h = ecc_layer(h, edge_index, edge_emb)
 
         # Global pooling
-        h = self.pool(h, batch_idx)
+        h_pooled = self.pool(h, batch_idx)
 
-        # Concatenate with global features if available
-        if global_feats is not None:
-            h = torch.cat([h, global_feats], dim=-1)
+        # Encode and concatenate global features (adduct descriptors) if available
+        if global_feats is not None and self.global_encoder is not None:
+            # Pass descriptors through embedding MLP
+            adduct_emb = self.global_encoder(global_feats.float())
+            h_pooled = torch.cat([h_pooled, adduct_emb], dim=-1)
+        elif global_feats is not None:
+            # Fallback: direct concatenation (legacy mode)
+            h_pooled = torch.cat([h_pooled, global_feats], dim=-1)
 
         # Dense prediction head
-        out = self.dense_head(h)
+        out = self.dense_head(h_pooled)
 
         return out
