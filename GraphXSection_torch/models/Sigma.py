@@ -49,6 +49,9 @@ class SigmaModel(nn.Module):
         self.global_emb_dim = int(
             m.get("global_emb_dim", 16)
         )  # Embedding dimension for descriptors
+        self.num_global_encoder_layers = int(
+            m.get("num_global_encoder_layers", 2)
+        )  # Number of layers in global encoder MLP
         self.one_hot_encode_feats = config.get("one_hot_encode_feats", False)
 
         # Model hyperparameters (matching SigmaCCS defaults)
@@ -89,6 +92,7 @@ class SigmaModel(nn.Module):
         logger.info(f"    - Edge dim: {self.edge_dim}")
         logger.info(f"    - Global raw dim: {self.global_raw_dim}")
         logger.info(f"    - Global emb dim: {self.global_emb_dim}")
+        logger.info(f"    - Global encoder layers: {self.num_global_encoder_layers}")
         logger.info("=" * 80)
 
         # Handle embeddings vs projections for different encoding types
@@ -162,14 +166,35 @@ class SigmaModel(nn.Module):
 
         # Global feature encoder (for adduct descriptors)
         if self.global_raw_dim > 0:
-            self.global_encoder = nn.Sequential(
-                nn.Linear(self.global_raw_dim, self.global_emb_dim * 2),
-                nn.ReLU(),
-                nn.Dropout(self.dropout),
-                nn.Linear(self.global_emb_dim * 2, self.global_emb_dim),
-            )
+            global_encoder_layers = []
+            input_dim = self.global_raw_dim
+
+            # Build configurable number of hidden layers
+            for i in range(self.num_global_encoder_layers - 1):
+                output_dim = self.global_emb_dim * 2 if i == 0 else self.global_emb_dim
+                global_encoder_layers.extend(
+                    [
+                        nn.Linear(input_dim, output_dim),
+                        nn.ReLU(),
+                        nn.Dropout(self.dropout),
+                    ]
+                )
+                input_dim = output_dim
+
+            # Final layer to global_emb_dim
+            global_encoder_layers.append(nn.Linear(input_dim, self.global_emb_dim))
+
+            self.global_encoder = nn.Sequential(*global_encoder_layers)
+
+            # Log architecture
+            layer_dims = [self.global_raw_dim]
+            for i in range(self.num_global_encoder_layers - 1):
+                layer_dims.append(
+                    self.global_emb_dim * 2 if i == 0 else self.global_emb_dim
+                )
+            layer_dims.append(self.global_emb_dim)
             logger.info(
-                f"Global encoder MLP: {self.global_raw_dim} -> {self.global_emb_dim * 2} -> {self.global_emb_dim}"
+                f"Global encoder MLP ({self.num_global_encoder_layers} layers): {' -> '.join(map(str, layer_dims))}"
             )
         else:
             self.global_encoder = None

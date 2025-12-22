@@ -335,7 +335,6 @@ def main(
         build_datasets_from_separate_files,
         build_dataset_from_csv,
     )
-    from GraphXSection_torch.data_extract import AdductEncoder
 
     # Check if separate dataset files are specified
     if all(
@@ -350,30 +349,26 @@ def main(
             df_train,
             df_valid,
             df_test,
-            adduct_ohe_dim,
-            encoder,
+            adduct_feature_sizes,
         ) = build_datasets_from_separate_files(
             train_csv_path=config["train_data_path"],
             valid_csv_path=config["valid_data_path"],
             test_csv_path=config["test_data_path"],
             smiles_col=config.get("smiles_col", "SMILES"),
             adduct_col=config.get("adduct_col", "Adduct"),
+            use_adduct_descriptors=config.get("use_adduct_descriptors", True),
             one_hot_encode_feats=config.get("one_hot_encode_feats", False),
             feature_config_path=Path(feature_config) if feature_config else None,
         )
     else:
         log.info("Using single dataset file with automatic splitting")
         df_all = pd.read_csv(config["data_path"])  # Keep raw df for saving/plots
-        encoder = AdductEncoder()
-        # Fit encoder over all adducts to lock OHE ordering across splits
-        encoder.fit([df_all["Adduct"]])
-        log.debug(f"Adducts: {encoder.adduct_to_idx}")
 
-        full_dataset, adduct_ohe_dim = build_dataset_from_df(
+        full_dataset, adduct_feature_sizes = build_dataset_from_df(
             df_all,
             smiles_col=config.get("smiles_col", "SMILES"),
             adduct_col=config.get("adduct_col", "Adduct"),
-            adduct_encoder=encoder,
+            use_adduct_descriptors=config.get("use_adduct_descriptors", True),
             one_hot_encode_feats=config.get("one_hot_encode_feats", False),
             feature_config_path=Path(feature_config) if feature_config else None,
         )
@@ -401,7 +396,7 @@ def main(
             test_csv_path,
             smiles_col=config.get("smiles_col", "SMILES"),
             adduct_col=config.get("adduct_col", "Adduct"),
-            adduct_encoder=encoder,
+            use_adduct_descriptors=config.get("use_adduct_descriptors", True),
         )
 
         # Create a temporary DataModule from existing datasets so we can extract
@@ -415,18 +410,18 @@ def main(
                 df_train,
                 df_valid,
                 df_test,
-                adduct_ohe_dim,
-                encoder,
+                adduct_feature_sizes,
             ) = build_datasets_from_separate_files(
                 train_csv_path=config.get("train_data_path"),
                 valid_csv_path=config.get("valid_data_path"),
                 test_csv_path=test_csv_path,
                 smiles_col=config.get("smiles_col", "SMILES"),
                 adduct_col=config.get("adduct_col", "Adduct"),
+                use_adduct_descriptors=config.get("use_adduct_descriptors", True),
                 one_hot_encode_feats=config.get("one_hot_encode_feats", False),
                 feature_config_path=Path(feature_config) if feature_config else None,
             )
-            global_feature_sizes = adduct_ohe_dim
+            global_feature_sizes = adduct_feature_sizes
             log.info(
                 f"Propagating global feature sizes to config: {global_feature_sizes}"
             )
@@ -482,7 +477,7 @@ def main(
         train_data,
         valid_data,
         test_data,
-        adduct_ohe_dim,
+        global_feature_sizes=adduct_feature_sizes,
         base_model_path=base_model if transfer_learn else None,
     )
     # Lightning evaluation

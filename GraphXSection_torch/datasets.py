@@ -18,9 +18,9 @@ from pathlib import Path
 
 from GraphXSection_torch.data_extract import (
     GraphXSectionDataset,
-    AdductEncoder,
     collate_fn,
 )
+from GraphXSection_torch.adduct_features import AdductFeatureExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -29,66 +29,95 @@ def build_dataset_from_df(
     df: pd.DataFrame,
     smiles_col: str = "SMILES",
     adduct_col: str = "Adduct",
-    adduct_encoder: AdductEncoder | None = None,
+    use_adduct_descriptors: bool = True,
     one_hot_encode_feats: bool = False,
     feature_config_path: Optional[Path] = None,
 ) -> Tuple[GraphXSectionDataset, int]:
     """Create GraphXSectionDataset from a DataFrame.
 
-    Drops rows missing SMILES/Adduct/CCS, encodes adduct with the provided encoder (or
-    a temporary fit on df if none is provided), and constructs the dataset.
+    Drops rows missing SMILES/Adduct/CCS and extracts adduct features using
+    physicochemical descriptors (default) or legacy one-hot encoding.
 
     Args:
         df: DataFrame with molecular data
         smiles_col: Column name for SMILES strings
         adduct_col: Column name for adduct information
-        adduct_encoder: Pre-fitted adduct encoder
-        one_hot_encode_feats: Whether to use one-hot encoding for features
+        use_adduct_descriptors: Whether to use physicochemical descriptors (True, recommended)
+                               or legacy one-hot encoding (False)
+        one_hot_encode_feats: Whether to use one-hot encoding for molecular features
         feature_config_path: Path to custom feature configuration JSON
 
     Returns:
-        Tuple of (dataset, adduct_ohe_dimension)
+        Tuple of (dataset, adduct_feature_dimension)
     """
     df = df.dropna(subset=[smiles_col, adduct_col, "CCS"])  # minimal requirements
     smiles = df[smiles_col].tolist()
     adducts = df[adduct_col].tolist()
-
-    if adduct_encoder is None:
-        logger.info("AdductEncoder not provided; fitting on provided DataFrame")
-        adduct_encoder = AdductEncoder().fit([df[adduct_col]])
-
-    adduct_ohe = adduct_encoder.transform(df[adduct_col])  # (N, V)
-    logger.debug(f"Adduct OHE shape: {adduct_ohe.shape}")
-    logger.debug(f"Adduct OHE sample:\n{adduct_ohe[:5]}")
     targets = df["CCS"].values
+
+    if use_adduct_descriptors:
+        # Use physicochemical descriptors (vocab-free, generalization-friendly)
+        logger.info("Extracting physicochemical adduct descriptors (vocab-free)")
+        extractor = AdductFeatureExtractor()
+        adduct_features = np.stack(
+            [
+                extractor.extract_features(adduct, smiles=smi)
+                for adduct, smi in zip(adducts, smiles)
+            ]
+        ).astype(np.float32)
+        logger.debug(f"Adduct descriptor shape: {adduct_features.shape}")
+        logger.debug(f"Adduct descriptor sample:\n{adduct_features[:5]}")
+    else:
+        # Legacy one-hot encoding (requires vocabulary, not recommended for new work)
+        logger.warning(
+            "Using legacy one-hot encoding for adducts (not recommended for generalization)"
+        )
+        from GraphXSection_torch.data_extract import AdductEncoder
+
+        adduct_encoder = AdductEncoder().fit([df[adduct_col]])
+        adduct_features = adduct_encoder.transform(df[adduct_col])  # (N, V)
+        logger.debug(f"Adduct OHE shape: {adduct_features.shape}")
+        logger.debug(f"Adduct OHE sample:\n{adduct_features[:5]}")
 
     dataset = GraphXSectionDataset(
         smiles,
         adducts,
-        adduct_ohe,
+        adduct_features,
         targets,
         one_hot_encode=one_hot_encode_feats,
         feature_config_path=feature_config_path,
     )
-    adduct_ohe_dim = adduct_ohe.shape[1]
+    adduct_feat_dim = adduct_features.shape[1]
     dataset.summarize()
-    return dataset, adduct_ohe_dim
+    return dataset, adduct_feat_dim
 
 
 def build_dataset_from_csv(
     csv_path: str,
     smiles_col: str = "SMILES",
     adduct_col: str = "Adduct",
-    adduct_encoder: AdductEncoder | None = None,
-) -> Tuple[GraphXSectionDataset, pd.DataFrame, AdductEncoder]:
-    """Load a CSV and return the dataset, cleaned DataFrame, and encoder used."""
+    use_adduct_descriptors: bool = True,
+) -> Tuple[GraphXSectionDataset, pd.DataFrame, int]:
+    """Load a CSV and return the dataset, cleaned DataFrame, and feature dimension.
+
+    Args:
+        csv_path: Path to CSV file
+        smiles_col: Column name for SMILES strings
+        adduct_col: Column name for adduct information
+        use_adduct_descriptors: Whether to use physicochemical descriptors (True, default)
+                               or legacy one-hot encoding (False)
+
+    Returns:
+        Tuple of (dataset, dataframe, adduct_feature_dimension)
+    """
     df = pd.read_csv(csv_path)
-    if adduct_encoder is None:
-        adduct_encoder = AdductEncoder().fit([df[adduct_col]])
-    dataset = build_dataset_from_df(
-        df, smiles_col=smiles_col, adduct_col=adduct_col, adduct_encoder=adduct_encoder
+    dataset, adduct_feat_dim = build_dataset_from_df(
+        df,
+        smiles_col=smiles_col,
+        adduct_col=adduct_col,
+        use_adduct_descriptors=use_adduct_descriptors,
     )
-    return dataset, df, adduct_encoder
+    return dataset, df, adduct_feat_dim
 
 
 def split_indices_stratified(
@@ -127,13 +156,14 @@ def build_datasets_from_separate_files(
     test_csv_path: str,
     smiles_col: str = "SMILES",
     adduct_col: str = "Adduct",
+    use_adduct_descriptors: bool = True,
     one_hot_encode_feats: bool = False,
     feature_config_path: Optional[Path] = None,
 ) -> Tuple[Subset, Subset, Subset, pd.DataFrame, pd.DataFrame, pd.DataFrame, int]:
     """Create datasets from separate train/valid/test CSV files.
 
     This function loads three separate CSV files and creates individual datasets
-    for each split, ensuring consistent adduct encoding across all splits.
+    for each split using physicochemical adduct descriptors (vocab-free by default).
 
     Args:
         train_csv_path: Path to training CSV file
@@ -141,11 +171,13 @@ def build_datasets_from_separate_files(
         test_csv_path: Path to test CSV file
         smiles_col: Column name for SMILES strings
         adduct_col: Column name for adduct information
-        one_hot_encode_feats: Whether to use one-hot encoding for features
+        use_adduct_descriptors: Whether to use physicochemical descriptors (True, default)
+                               or legacy one-hot encoding (False)
+        one_hot_encode_feats: Whether to use one-hot encoding for molecular features
         feature_config_path: Path to custom feature configuration JSON
 
     Returns:
-        Tuple of (train_subset, valid_subset, test_subset, df_train, df_valid, df_test, adduct_ohe_dim)
+        Tuple of (train_subset, valid_subset, test_subset, df_train, df_valid, df_test, adduct_feat_dim)
     """
     logger.info("Loading datasets from separate CSV files...")
 
@@ -158,20 +190,12 @@ def build_datasets_from_separate_files(
     logger.info(f"Loaded valid: {len(df_valid)} samples")
     logger.info(f"Loaded test: {len(df_test)} samples")
 
-    # Combine all data to fit adduct encoder consistently
-    df_all = pd.concat([df_train, df_valid, df_test], ignore_index=True)
-
-    # Create and fit adduct encoder on all data
-    encoder = AdductEncoder()
-    encoder.fit([df_all[adduct_col]])
-    logger.debug(f"Adducts found: {encoder.adduct_to_idx}")
-
     # Create datasets for each split
-    train_dataset, adduct_ohe_dim = build_dataset_from_df(
+    train_dataset, adduct_feat_dim = build_dataset_from_df(
         df_train,
         smiles_col=smiles_col,
         adduct_col=adduct_col,
-        adduct_encoder=encoder,
+        use_adduct_descriptors=use_adduct_descriptors,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
     )
@@ -180,7 +204,7 @@ def build_datasets_from_separate_files(
         df_valid,
         smiles_col=smiles_col,
         adduct_col=adduct_col,
-        adduct_encoder=encoder,
+        use_adduct_descriptors=use_adduct_descriptors,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
     )
@@ -189,7 +213,7 @@ def build_datasets_from_separate_files(
         df_test,
         smiles_col=smiles_col,
         adduct_col=adduct_col,
-        adduct_encoder=encoder,
+        use_adduct_descriptors=use_adduct_descriptors,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
     )
@@ -208,8 +232,7 @@ def build_datasets_from_separate_files(
         df_train,
         df_valid,
         df_test,
-        adduct_ohe_dim,
-        encoder,
+        adduct_feat_dim,
     )
 
 

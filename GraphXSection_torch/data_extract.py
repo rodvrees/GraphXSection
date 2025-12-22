@@ -587,9 +587,21 @@ def _get_data(
     smiles_col: str = "SMILES",
     train: bool = False,
     adduct_encoder: AdductEncoder | None = None,
-    use_adduct_descriptors: bool = False,
+    use_adduct_descriptors: bool = True,
 ) -> GraphXSectionDataset:
-    """Extract data necessary for training from the dataframe and build the dataset."""
+    """Extract data necessary for training from the dataframe and build the dataset.
+
+    Args:
+        df: DataFrame with molecular data
+        smiles_col: Column name for SMILES strings
+        train: Whether this is training data (currently unused but kept for compatibility)
+        adduct_encoder: Legacy AdductEncoder (only used when use_adduct_descriptors=False)
+        use_adduct_descriptors: Whether to use physicochemical descriptors (True, default)
+                               or legacy one-hot encoding (False)
+
+    Returns:
+        GraphXSectionDataset with extracted features
+    """
 
     # Remove rows with NaN values in the SMILES column or the global features
     df = df.dropna(
@@ -607,17 +619,14 @@ def _get_data(
         # Extract physicochemical descriptors for each adduct
         from GraphXSection_torch.adduct_features import AdductFeatureExtractor
 
-        logger.info("Extracting physicochemical adduct descriptors")
-        extractor = AdductFeatureExtractor(feature_dim=16)
+        logger.info("Extracting physicochemical adduct descriptors (vocab-free)")
+        extractor = AdductFeatureExtractor()
 
-        # Compute neutral mass for each molecule
-        neutral_masses = [_neutral_exact_mass_from_smiles(smi) for smi in smiles]
-
-        # Extract 15-dimensional descriptors for each adduct
+        # Extract descriptors for each adduct (includes SMILES information)
         all_feats = np.stack(
             [
-                extractor.extract_descriptor(adduct, neutral_mass)
-                for adduct, neutral_mass in zip(adducts, neutral_masses)
+                extractor.extract_features(adduct, smiles=smi)
+                for adduct, smi in zip(adducts, smiles)
             ]
         ).astype(np.float32)
 
@@ -741,10 +750,12 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
     )
 
     # Check if using adduct descriptors (recommended for generalization)
-    use_adduct_descriptors = config.get("use_adduct_descriptors", False)
+    use_adduct_descriptors = config.get("use_adduct_descriptors", True)
 
     if use_adduct_descriptors:
-        logger.info("Using physicochemical adduct descriptors for generalization")
+        logger.info(
+            "Using physicochemical adduct descriptors for generalization (vocab-free)"
+        )
         adduct_encoder = None
     else:
         # Create and fit AdductEncoder for consistent one-hot encoding across all splits
