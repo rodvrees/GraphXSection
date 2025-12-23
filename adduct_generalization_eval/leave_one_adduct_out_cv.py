@@ -605,6 +605,13 @@ def main():
         )
         fold_dir = output_dir / fold_name
 
+        # if fold_dir exists, check if baseline subdir exists to skip
+        if fold_dir.exists() and (fold_dir / "baseline").exists():
+            logger.info(
+                f"Fold directory {fold_dir} with baseline results exists, skipping fold"
+            )
+            continue
+
         # Create fold data splits
         train_df, valid_df, test_original_df, test_baseline_df = create_fold_data(
             df=df,

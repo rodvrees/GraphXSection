@@ -287,10 +287,6 @@ def main(
             f"Inference mode enabled. Test CSV: {test_csv or config.get('test_data_path')}, model: {inference_model or base_model}"
         )
 
-    # Import after logging setup to avoid pytorch logging conflicts
-    from GraphXSection_torch.data_extract import data_extract
-    from GraphXSection_torch.data_extract import GraphXSectionDataset
-
     from GraphXSection_torch.train_lightning import (
         train_lightning_GraphXSection,
     )

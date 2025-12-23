@@ -32,6 +32,7 @@ def build_dataset_from_df(
     use_adduct_descriptors: bool = True,
     one_hot_encode_feats: bool = False,
     feature_config_path: Optional[Path] = None,
+    feat_include_ref: bool = False,
 ) -> Tuple[GraphXSectionDataset, int]:
     """Create GraphXSectionDataset from a DataFrame.
 
@@ -58,15 +59,26 @@ def build_dataset_from_df(
     if use_adduct_descriptors:
         # Use physicochemical descriptors (vocab-free, generalization-friendly)
         logger.info("Extracting physicochemical adduct descriptors (vocab-free)")
-        extractor = AdductFeatureExtractor()
-        adduct_features = np.stack(
-            [
-                extractor.extract_features(adduct, smiles=smi)
-                for adduct, smi in zip(adducts, smiles)
-            ]
-        ).astype(np.float32)
-        logger.debug(f"Adduct descriptor shape: {adduct_features.shape}")
-        logger.debug(f"Adduct descriptor sample:\n{adduct_features[:5]}")
+        if not feat_include_ref:
+            extractor = AdductFeatureExtractor()
+            adduct_features = np.stack(
+                [
+                    extractor.extract_features(adduct, smiles=smi)
+                    for adduct, smi in zip(adducts, smiles)
+                ]
+            ).astype(np.float32)
+            logger.debug(f"Adduct descriptor shape: {adduct_features.shape}")
+            logger.debug(f"Adduct descriptor sample:\n{adduct_features[:5]}")
+        else:
+            extractor = AdductFeatureExtractor()
+            adduct_features = np.stack(
+                [
+                    extractor.extract_descriptor_with_reference(adduct, smiles=smi)
+                    for adduct, smi in zip(adducts, smiles)
+                ]
+            ).astype(np.float32)
+            logger.debug(f"Adduct descriptor (with ref) shape: {adduct_features.shape}")
+            logger.debug(f"Adduct descriptor (with ref) sample:\n{adduct_features[:5]}")
     else:
         # Legacy one-hot encoding (requires vocabulary, not recommended for new work)
         logger.warning(
@@ -198,6 +210,7 @@ def build_datasets_from_separate_files(
         use_adduct_descriptors=use_adduct_descriptors,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
+        feat_include_ref=True,
     )
 
     valid_dataset, _ = build_dataset_from_df(
@@ -207,6 +220,7 @@ def build_datasets_from_separate_files(
         use_adduct_descriptors=use_adduct_descriptors,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
+        feat_include_ref=True,
     )
 
     test_dataset, _ = build_dataset_from_df(
@@ -216,6 +230,7 @@ def build_datasets_from_separate_files(
         use_adduct_descriptors=use_adduct_descriptors,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
+        feat_include_ref=True,
     )
 
     # Create Subset objects with full indices (since each dataset is already the correct split)

@@ -564,30 +564,13 @@ def collate_fn(batch):
     return {"graph": batched_graphs, "global_feats": global_feats, "target": targets}
 
 
-def _neutral_exact_mass_from_smiles(smiles: str) -> float:
-    """Calculate the neutral exact mass of a molecule from its SMILES string.
-
-    Args:
-        smiles: SMILES string of the molecule
-
-    Returns:
-        Neutral exact molecular weight as a float
-    """
-    from rdkit import Chem
-    from rdkit.Chem import rdMolDescriptors
-
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        raise ValueError(f"Invalid SMILES string: {smiles}")
-    return float(rdMolDescriptors.CalcExactMolWt(mol))
-
-
 def _get_data(
     df: pd.DataFrame,
     smiles_col: str = "SMILES",
     train: bool = False,
     adduct_encoder: AdductEncoder | None = None,
     use_adduct_descriptors: bool = True,
+    feat_include_ref: bool = True,
 ) -> GraphXSectionDataset:
     """Extract data necessary for training from the dataframe and build the dataset.
 
@@ -598,11 +581,14 @@ def _get_data(
         adduct_encoder: Legacy AdductEncoder (only used when use_adduct_descriptors=False)
         use_adduct_descriptors: Whether to use physicochemical descriptors (True, default)
                                or legacy one-hot encoding (False)
+        feat_include_ref: Whether to include reference-based features in descriptor extraction
 
     Returns:
         GraphXSectionDataset with extracted features
     """
-
+    input(
+        f"Extracting data from dataframe with {len(df)} samples. Press Enter to continue..."
+    )
     # Remove rows with NaN values in the SMILES column or the global features
     df = df.dropna(
         subset=[
@@ -623,12 +609,24 @@ def _get_data(
         extractor = AdductFeatureExtractor()
 
         # Extract descriptors for each adduct (includes SMILES information)
-        all_feats = np.stack(
-            [
-                extractor.extract_features(adduct, smiles=smi)
-                for adduct, smi in zip(adducts, smiles)
-            ]
-        ).astype(np.float32)
+        if not feat_include_ref:
+            input("Excluding reference-based features. Press Enter to continue...")
+            all_feats = np.stack(
+                [
+                    extractor.extract_features(adduct, smiles=smi)
+                    for adduct, smi in zip(adducts, smiles)
+                ]
+            ).astype(np.float32)
+        else:
+            input("Including reference-based features. Press Enter to continue...")
+            all_feats = np.stack(
+                [
+                    extractor.extract_descriptor_with_reference(
+                        adduct, smiles=smi, include_delta=True
+                    )
+                    for adduct, smi in zip(adducts, smiles)
+                ]
+            ).astype(np.float32)
 
         logger.info(f"Extracted {all_feats.shape[1]}-dimensional descriptors")
     else:
@@ -708,37 +706,12 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
     logger.info("Reading data file: %s", config["data_path"])
     data = pd.read_csv(config["data_path"])
 
-    # if config["model"].get("type", None) == "Ginny3D":
-    #     data = pd.read_csv(config["data_path"])
-    #     data.drop(["delta_to_second_best"], axis=1, inplace=True)
-    #     # Remove columns where all values are the same
-    #     data.replace(-1000, np.nan, inplace=True)
-    #     data = _drop_constant_columns(data)
-    #     # Drop columns with NaN values
-    #     logger.info("Dropping columns with NaN values")
-    #     logger.debug(
-    #         "Columns with NaN values: %s", len(data.columns[data.isna().any()])
-    #     )
-    #     data.dropna(axis=1, inplace=True)
-    #     logger.info("Dropped columns with NaN values")
-    #     logger.debug("Remaining columns: %s", len(data.columns))
-
     df_train, df_valid, df_test = _stratified_split(
         data,
         test_split=config["test_split"],
         valid_split=config["valid_split"],
         stratify_col="Adduct",
     )
-
-    # if config["model"].get("type", None) == "Eddy":
-    #     df_train = get_embeddings(df_train, config)
-    #     df_valid = get_embeddings(df_valid, config)
-    #     df_test = get_embeddings(df_test, config)
-    #     df_train["Adduct_OHE"] = _get_adduct_OHE(df_train).tolist()
-    #     df_valid["Adduct_OHE"] = _get_adduct_OHE(df_valid).tolist()
-    #     df_test["Adduct_OHE"] = _get_adduct_OHE(df_test).tolist()
-
-    #     return df_train, df_valid, df_test, None, None
 
     if config.get("save_dfs", False):
         df_train.to_csv(f"{config['output_path']}/train_df.csv", index=False)
@@ -775,12 +748,14 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
             adduct_encoder.save_vocabulary(vocab_path)
 
     logger.info("Extracting training data")
+    input("Press Enter to continue...")
     train_dataset = _get_data(
         df_train,
         smiles_col=config.get("smiles_col", "SMILES"),
         train=True,
         adduct_encoder=adduct_encoder,
         use_adduct_descriptors=use_adduct_descriptors,
+        feat_include_ref=config.get("feat_include_ref", True),
     )
 
     logger.info("Extracting validation and test data")
@@ -790,6 +765,7 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
         train=False,
         adduct_encoder=adduct_encoder,
         use_adduct_descriptors=use_adduct_descriptors,
+        feat_include_ref=config.get("feat_include_ref", True),
     )
     test_dataset = _get_data(
         df_test,
@@ -797,6 +773,7 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
         train=False,
         adduct_encoder=adduct_encoder,
         use_adduct_descriptors=use_adduct_descriptors,
+        feat_include_ref=config.get("feat_include_ref", True),
     )
 
     logger.info("Data extraction complete")

@@ -7,7 +7,7 @@ import numpy as np
 from typing import Dict, Any, Optional
 import logging
 
-from GraphXSection_torch.data_extract import GraphXSectionDataset, collate_fn
+from GraphXSection_torch.data_extract import collate_fn
 
 logger = logging.getLogger(__name__)
 
