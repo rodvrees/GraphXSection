@@ -113,11 +113,20 @@ def mol_to_xyz_block(mol: Chem.Mol) -> str:
     return "\n".join(lines)
 
 
-def run_orca_pm3(xyz_block: str, charge: int, orca_bin: str, timeout_seconds: int) -> tuple[Optional[float], str]:
+def run_orca_pm3(
+    xyz_block: str, charge: int, orca_bin: str, timeout_seconds: int, scratch_root: Optional[str]
+) -> tuple[Optional[float], str]:
     """Run a single ORCA PM3 geometry optimization. Returns (energy_hartree,
     status); energy is None on failure. No %pal block: PM3/NDO methods can't
-    run in ORCA's parallel mode in this build (confirmed directly)."""
-    with tempfile.TemporaryDirectory(prefix="orca_pm3_") as scratch:
+    run in ORCA's parallel mode in this build (confirmed directly).
+
+    scratch_root should point at a tmpfs (e.g. /dev/shm) when running many
+    jobs in parallel: measured directly on this machine, ORCA's per-job
+    scratch I/O on the ext4-backed default tempdir (/tmp) was the bottleneck
+    at high concurrency -- 96 candidates at --n-jobs 30 took 82s on /tmp vs
+    36s on /dev/shm (CPU utilization went from ~770% to ~2260% of the
+    requested 3000%), a ~2.25x wall-clock difference from I/O alone."""
+    with tempfile.TemporaryDirectory(prefix="orca_pm3_", dir=scratch_root) as scratch:
         inp_path = Path(scratch) / "job.inp"
         inp_path.write_text(f"! PM3 Opt\n* xyz {charge} 1\n{xyz_block}\n*\n")
 
@@ -143,7 +152,9 @@ def run_orca_pm3(xyz_block: str, charge: int, orca_bin: str, timeout_seconds: in
         return float(energies[-1]), "ok" if converged else "not_converged"
 
 
-def compute_pm3_energy(job: dict[str, Any], orca_bin: str, timeout_seconds: int) -> dict[str, Any]:
+def compute_pm3_energy(
+    job: dict[str, Any], orca_bin: str, timeout_seconds: int, scratch_root: Optional[str]
+) -> dict[str, Any]:
     result = dict(job)
     mol, status = embed_and_optimize(job["candidate_smiles"])
     if mol is None:
@@ -158,7 +169,7 @@ def compute_pm3_energy(job: dict[str, Any], orca_bin: str, timeout_seconds: int)
         return result
 
     xyz_block = mol_to_xyz_block(mol)
-    energy, orca_status = run_orca_pm3(xyz_block, actual_charge, orca_bin, timeout_seconds)
+    energy, orca_status = run_orca_pm3(xyz_block, actual_charge, orca_bin, timeout_seconds, scratch_root)
     result.update(pm3_energy_hartree=energy, pm3_status=orca_status)
     return result
 
@@ -176,7 +187,13 @@ OUTPUT_SCHEMA = pa.schema(
 
 
 def run_ranking(
-    candidates_df: pd.DataFrame, output_path: Path, orca_bin: str, timeout_seconds: int, n_jobs: int, chunk_size: int
+    candidates_df: pd.DataFrame,
+    output_path: Path,
+    orca_bin: str,
+    timeout_seconds: int,
+    n_jobs: int,
+    chunk_size: int,
+    scratch_root: Optional[str],
 ) -> dict[str, int]:
     jobs = candidates_df[
         ["inchikey", "charge_state", "candidate_smiles", "charged_atom_idx"]
@@ -195,7 +212,9 @@ def run_ranking(
 
     try:
         with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-            futures = [executor.submit(compute_pm3_energy, job, orca_bin, timeout_seconds) for job in jobs]
+            futures = [
+                executor.submit(compute_pm3_energy, job, orca_bin, timeout_seconds, scratch_root) for job in jobs
+            ]
             for future in tqdm(as_completed(futures), total=len(futures), desc="Running ORCA PM3"):
                 result = future.result()
                 buffer.append(result)
@@ -221,6 +240,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--chunk-size", type=int, default=200, help="Rows to buffer before writing to Parquet (default: 200)")
     parser.add_argument("--limit", type=int, default=None, help="Cap on number of candidates to process (for smoke testing)")
+    parser.add_argument(
+        "--scratch-dir", type=str, default="/dev/shm" if Path("/dev/shm").is_dir() else None,
+        help=(
+            "Parent directory for per-job ORCA scratch dirs. Defaults to /dev/shm "
+            "(RAM-backed tmpfs) when present -- measured directly on this machine, "
+            "using tmpfs instead of the ext4-backed default tempdir roughly halved "
+            "wall-clock time at high --n-jobs (I/O, not CPU, was the bottleneck). "
+            "Falls back to the system default tempdir if /dev/shm doesn't exist. "
+            "Needs a few MB per concurrent job; not a concern at typical --n-jobs."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not Path(args.orca_bin).exists():
@@ -232,9 +262,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     candidates_df = candidates_df[candidates_df["candidate_smiles"].notna()]
     if args.limit is not None:
         candidates_df = candidates_df.head(args.limit)
-    logger.info("Ranking %d candidates via ORCA PM3 (%d parallel jobs)", len(candidates_df), args.n_jobs)
+    logger.info(
+        "Ranking %d candidates via ORCA PM3 (%d parallel jobs, scratch=%s)",
+        len(candidates_df), args.n_jobs, args.scratch_dir or "<system default>",
+    )
 
-    stats = run_ranking(candidates_df, args.output, args.orca_bin, args.timeout_seconds, args.n_jobs, args.chunk_size)
+    stats = run_ranking(
+        candidates_df, args.output, args.orca_bin, args.timeout_seconds, args.n_jobs, args.chunk_size, args.scratch_dir
+    )
 
     logger.info("Run summary:")
     for key in sorted(stats):
