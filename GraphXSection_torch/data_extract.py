@@ -570,7 +570,7 @@ def _get_data(
     train: bool = False,
     adduct_encoder: AdductEncoder | None = None,
     use_adduct_descriptors: bool = True,
-    feat_include_ref: bool = True,
+    feat_include_ref: bool = False,
 ) -> GraphXSectionDataset:
     """Extract data necessary for training from the dataframe and build the dataset.
 
@@ -610,7 +610,6 @@ def _get_data(
 
         # Extract descriptors for each adduct (includes SMILES information)
         if not feat_include_ref:
-            input("Excluding reference-based features. Press Enter to continue...")
             all_feats = np.stack(
                 [
                     extractor.extract_features(adduct, smiles=smi)
@@ -618,7 +617,6 @@ def _get_data(
                 ]
             ).astype(np.float32)
         else:
-            input("Including reference-based features. Press Enter to continue...")
             all_feats = np.stack(
                 [
                     extractor.extract_descriptor_with_reference(
@@ -755,7 +753,7 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
         train=True,
         adduct_encoder=adduct_encoder,
         use_adduct_descriptors=use_adduct_descriptors,
-        feat_include_ref=config.get("feat_include_ref", True),
+        feat_include_ref=config.get("feat_include_ref", False),
     )
 
     logger.info("Extracting validation and test data")
@@ -765,7 +763,7 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
         train=False,
         adduct_encoder=adduct_encoder,
         use_adduct_descriptors=use_adduct_descriptors,
-        feat_include_ref=config.get("feat_include_ref", True),
+        feat_include_ref=config.get("feat_include_ref", False),
     )
     test_dataset = _get_data(
         df_test,
@@ -773,7 +771,7 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
         train=False,
         adduct_encoder=adduct_encoder,
         use_adduct_descriptors=use_adduct_descriptors,
-        feat_include_ref=config.get("feat_include_ref", True),
+        feat_include_ref=config.get("feat_include_ref", False),
     )
 
     logger.info("Data extraction complete")

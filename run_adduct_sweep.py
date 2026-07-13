@@ -155,6 +155,10 @@ def create_sweep(config_path: Path, project: str):
 def run_sweep(sweep_id: str, count: int, project: str):
     """Run the sweep agent"""
     import wandb
+    
+    # Import the wrapper function
+    sys.path.insert(0, str(Path(__file__).parent / "sweep_configs"))
+    from wandb_sweep_wrapper import run_training_with_config
 
     logger.info(f"\n🚀 Starting sweep agent...")
     logger.info(f"  Sweep ID: {sweep_id}")
@@ -163,7 +167,8 @@ def run_sweep(sweep_id: str, count: int, project: str):
     logger.info("\n" + "=" * 80)
 
     try:
-        wandb.agent(sweep_id, project=project, count=count)
+        # Pass the function directly to avoid the program/command complexity
+        wandb.agent(sweep_id, function=run_training_with_config, project=project, count=count)
         logger.info("\n✓ Sweep completed successfully!")
     except KeyboardInterrupt:
         logger.info("\n⚠ Sweep interrupted by user")

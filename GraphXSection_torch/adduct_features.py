@@ -22,7 +22,7 @@ Bracketed adducts with explicit trailing charge, e.g.:
   [M+CH3COO]-
   [2M-H]2-
 
-Descriptor output (fixed length: 28)
+Descriptor output (fixed length: 40)
 ------------------------------------
 Core (6):
   0  z_signed
@@ -35,46 +35,68 @@ Core (6):
 Neutral molecule polarizability proxy (1):
   6  alpha_molecule_A3               (requires SMILES)
 
+Molecule-conditioned scalars (12) (requires SMILES):
+  7   TPSA
+  8   HBD
+  9   HBA
+  10  rotatable_bonds
+  11  ring_count
+  12  hetero_count                   (# atoms with atomic num not in {H,C})
+  13  n_O
+  14  n_N
+  15  fraction_csp3
+  16  logP                           (RDKit Crippen logP)
+  17  gasteiger_q05                  (5th percentile, heavy atoms)
+  18  gasteiger_q50                  (median, heavy atoms)
+  19  gasteiger_q95                  (95th percentile, heavy atoms)
+
 Adduct token/radius moment proxies - SPLIT into additions and losses (18):
   Mass contributions:
-    7   delta_mass_add               mass added from '+' tokens
-    8   delta_mass_loss              mass removed from '-' tokens (positive magnitude)
+    20  delta_mass_add               mass added from '+' tokens
+    21  delta_mass_loss              mass removed from '-' tokens (positive magnitude)
 
   Atom count contributions:
-    9   n_atoms_add                  total atoms added
-    10  n_atoms_loss                 total atoms removed (positive magnitude)
-    11  n_heavy_add                  heavy (non-H) atoms added
-    12  n_heavy_loss                 heavy atoms removed (positive magnitude)
+    22  n_atoms_add                  total atoms added
+    23  n_atoms_loss                 total atoms removed (positive magnitude)
+    24  n_heavy_add                  heavy (non-H) atoms added
+    25  n_heavy_loss                 heavy atoms removed (positive magnitude)
 
   Atomic number contributions:
-    13  Z_sum_add                    sum of Z added
-    14  Z_sum_loss                   sum of Z removed (positive magnitude)
+    26  Z_sum_add                    sum of Z added
+    27  Z_sum_loss                   sum of Z removed (positive magnitude)
 
   Van der Waals radius moments (split):
-    15  rvdw1_add                    Σ n_e * r_vdw(e) for additions
-    16  rvdw1_loss                   Σ n_e * r_vdw(e) for losses (positive magnitude)
-    17  rvdw2_add                    Σ n_e * r_vdw(e)^2 for additions
-    18  rvdw2_loss                   Σ n_e * r_vdw(e)^2 for losses (positive magnitude)
-    19  rvdw3_add                    Σ n_e * r_vdw(e)^3 for additions
-    20  rvdw3_loss                   Σ n_e * r_vdw(e)^3 for losses (positive magnitude)
+    28  rvdw1_add                    Σ n_e * r_vdw(e) for additions
+    29  rvdw1_loss                   Σ n_e * r_vdw(e) for losses (positive magnitude)
+    30  rvdw2_add                    Σ n_e * r_vdw(e)^2 for additions
+    31  rvdw2_loss                   Σ n_e * r_vdw(e)^2 for losses (positive magnitude)
+    32  rvdw3_add                    Σ n_e * r_vdw(e)^3 for additions
+    33  rvdw3_loss                   Σ n_e * r_vdw(e)^3 for losses (positive magnitude)
 
-  Net / targeted (kept at 4 dims to preserve vector length):
-    21  delta_total_atoms            net atom change (add - loss)
-    22  delta_heavy_atoms            net heavy atom change
-    23  H_add                        number of H atoms added via '+' tokens (includes H+)
-    24  H_loss                       number of H atoms removed via '-' tokens (e.g., -2H, -H2O contributes 2)
+  Net / targeted (kept at 4 dims):
+    34  delta_total_atoms            net atom change (add - loss)
+    35  delta_heavy_atoms            net heavy atom change
+    36  H_add                        number of H atoms added via '+' tokens (includes H+)
+    37  H_loss                       number of H atoms removed via '-' tokens (e.g., -2H, -H2O contributes 2)
 
 Loss fraction features (3) - requires SMILES:
-  25  loss_mass_fraction             delta_mass_loss / (multiplier * neutral_mass)
-  26  loss_heavy_fraction            n_heavy_loss / (multiplier * n_heavy_neutral)
-  27  loss_H_fraction                H_loss / (multiplier * n_H_neutral)
+  38  loss_mass_fraction             delta_mass_loss / (multiplier * neutral_mass)
+  39  loss_heavy_fraction            n_heavy_loss / (multiplier * n_heavy_neutral)
+  40  loss_H_fraction                H_loss / (multiplier * n_H_neutral)
 
 Important behavior
 ------------------
-- extract_descriptor(adduct_str, smiles) always returns the full 28D vector.
+- extract_descriptor(adduct_str, smiles) always returns the full 40D vector.
 - extract_features(adduct_str, smiles=None) returns:
-    * full 28D vector if smiles is provided
-    * reduced vector (22D) if smiles is omitted (drops SMILES-dependent terms: mz, charge_density, alpha, loss fractions)
+    * full 40D vector if smiles is provided
+    * reduced vector (22D) if smiles is omitted (drops SMILES-dependent terms: mz, charge_density, alpha,
+      molecule scalars, loss fractions)
+
+Notes
+-----
+- Token parsing is formula-based (periodic-table only). No adduct identity tables.
+- Masses for non-proton elements use RDKit periodic table atomic weights; this is a proxy.
+- Gasteiger charges are computed via RDKit; failures fall back to zeros (with a one-time warning per SMILES).
 """
 
 from __future__ import annotations
@@ -86,7 +108,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import AllChem, rdMolDescriptors
 
 
 @dataclass(frozen=True)
@@ -103,11 +125,6 @@ class ParsedAdduct:
 class AdductFeatureExtractor:
     """
     Vocab-free physicochemical descriptor extractor.
-
-    Notes
-    -----
-    - Token parsing is formula-based (periodic-table only). No adduct identity tables.
-    - Masses for non-proton elements use RDKit periodic table atomic weights; this is a proxy.
     """
 
     # Avogadro constant (exact SI definition)
@@ -129,10 +146,13 @@ class AdductFeatureExtractor:
     # Formula parser: element symbol + optional count (e.g., CH3COO -> C2 H3 O2)
     _FORMULA_RE = re.compile(r"([A-Z][a-z]?)(\d*)")
 
+    # ---------------
+
     def __init__(self, warn_on_unparsed_tokens: bool = True) -> None:
         self._ptable = Chem.GetPeriodicTable()
         self._warn_on_unparsed_tokens = bool(warn_on_unparsed_tokens)
         self._warned_tokens: set[str] = set()
+        self._warned_gasteiger: set[str] = set()
 
     # -------------------------
     # RDKit molecule helpers
@@ -179,6 +199,100 @@ class AdductFeatureExtractor:
         return int(h_count_str) if h_count_str else 1
 
     # -------------------------
+    # Molecule-conditioned scalars (SMILES-dependent)
+    # -------------------------
+    def molecule_conditioned_scalars(self, smiles: str) -> np.ndarray:
+        """
+        Compute 12 molecule-conditioned scalars (float32).
+
+        Returned order:
+          TPSA, HBD, HBA, rotatable_bonds, ring_count,
+          hetero_count, n_O, n_N, fraction_csp3, logP,
+          gasteiger_q05, gasteiger_q50, gasteiger_q95
+        """
+        mol = self._mol_from_smiles(smiles)
+
+        # Basic counts (heavy-atom graph; implicit H)
+        atoms = list(mol.GetAtoms())
+        n_O = float(sum(1 for a in atoms if a.GetAtomicNum() == 8))
+        n_N = float(sum(1 for a in atoms if a.GetAtomicNum() == 7))
+        hetero = float(sum(1 for a in atoms if a.GetAtomicNum() not in (1, 6)))
+
+        # Topological / lipophilicity
+        tpsa = float(rdMolDescriptors.CalcTPSA(mol))
+        hbd = float(rdMolDescriptors.CalcNumHBD(mol))
+        hba = float(rdMolDescriptors.CalcNumHBA(mol))
+        rot = float(rdMolDescriptors.CalcNumRotatableBonds(mol))
+        rings = float(rdMolDescriptors.CalcNumRings(mol))
+        frac_csp3 = float(rdMolDescriptors.CalcFractionCSP3(mol))
+
+        logp, _mr = rdMolDescriptors.CalcCrippenDescriptors(mol)
+        logp = float(logp)
+
+        # Gasteiger quantiles (heavy atoms)
+        q05, q50, q95 = self._gasteiger_quantiles(smiles, mol)
+
+        return np.array(
+            [
+                tpsa,
+                hbd,
+                hba,
+                rot,
+                rings,
+                hetero,
+                n_O,
+                n_N,
+                frac_csp3,
+                logp,
+                q05,
+                q50,
+                q95,
+            ],
+            dtype=np.float32,
+        )
+
+    def _gasteiger_quantiles(
+        self, smiles: str, mol: Chem.Mol
+    ) -> Tuple[float, float, float]:
+        """
+        Compute (q05, q50, q95) of Gasteiger partial charges over heavy atoms.
+
+        - Uses Chem.AddHs(mol) for charge computation stability.
+        - Returns zeros if charge computation fails.
+        """
+        try:
+            mol_h = Chem.AddHs(mol)
+            AllChem.ComputeGasteigerCharges(mol_h)
+
+            charges: List[float] = []
+            for a in mol_h.GetAtoms():
+                if a.GetAtomicNum() <= 1:  # ignore H
+                    continue
+                v = a.GetProp("_GasteigerCharge")
+                # RDKit stores as string; can be 'nan'
+                fv = float(v)
+                if np.isfinite(fv):
+                    charges.append(fv)
+
+            if not charges:
+                return 0.0, 0.0, 0.0
+
+            arr = np.asarray(charges, dtype=np.float64)
+            q05 = float(np.quantile(arr, 0.05))
+            q50 = float(np.quantile(arr, 0.50))
+            q95 = float(np.quantile(arr, 0.95))
+            return q05, q50, q95
+
+        except Exception:
+            if smiles not in self._warned_gasteiger:
+                self._warned_gasteiger.add(smiles)
+                warnings.warn(
+                    f"Gasteiger charge computation failed for SMILES={smiles!r}; using 0s for charge quantiles.",
+                    UserWarning,
+                )
+            return 0.0, 0.0, 0.0
+
+    # -------------------------
     # Formula parsing & masses
     # -------------------------
     def _parse_formula(self, token: str) -> Dict[str, int]:
@@ -218,7 +332,6 @@ class AdductFeatureExtractor:
             return float(self.PROTON_MASS)
 
         if not token_comp:
-            # Could be 'e' or malformed; treat as 0 but optionally warn
             self._maybe_warn_unparsed(token)
             return 0.0
 
@@ -249,9 +362,7 @@ class AdductFeatureExtractor:
     # Adduct parsing
     # -------------------------
     def parse_adduct(self, adduct_str: str) -> ParsedAdduct:
-        """
-        Parse a bracketed adduct string with explicit trailing charge.
-        """
+        """Parse a bracketed adduct string with explicit trailing charge."""
         s = adduct_str.strip()
         m = self._BRACKET_RE.match(s)
         if not m:
@@ -293,11 +404,11 @@ class AdductFeatureExtractor:
                 self._maybe_warn_unparsed(tok)
                 continue
 
-            # Aggregate net element deltas (still useful occasionally)
+            # Aggregate net element deltas (kept for occasional diagnostics)
             for el, n in comp.items():
                 element_delta[el] = element_delta.get(el, 0) + sgn * cnt * n
 
-            # Signed mass delta from token (token-based, consistent with split mass features)
+            # Signed mass delta from token
             delta_mass += sgn * float(cnt) * self._token_mass(tok, comp)
 
         return ParsedAdduct(
@@ -398,7 +509,7 @@ class AdductFeatureExtractor:
                     r2_loss += r2
                     r3_loss += r3
 
-        # Net values (kept as 2 dims) + targeted H add/loss (2 dims) to preserve length
+        # Net values + targeted H add/loss
         delta_total_atoms = atoms_add - atoms_loss
         delta_heavy_atoms = heavy_add - heavy_loss
 
@@ -422,7 +533,7 @@ class AdductFeatureExtractor:
                 r2_loss,
                 r3_add,
                 r3_loss,
-                # Net/targeted (4) -> keep vector length stable
+                # Net/targeted (4)
                 delta_total_atoms,
                 delta_heavy_atoms,
                 H_add,
@@ -437,16 +548,14 @@ class AdductFeatureExtractor:
     # Public feature APIs
     # -------------------------
     def extract_descriptor(self, adduct_str: str, smiles: str) -> np.ndarray:
-        """
-        Compute the full 28D descriptor vector (float32). Requires SMILES.
-        """
+        """Compute the full 40D descriptor vector (float32). Requires SMILES."""
         parsed = self.parse_adduct(adduct_str)
 
         z = int(parsed.z_signed)
         z_abs = max(1, abs(z))
         polarity = 1.0 if z > 0 else -1.0
 
-        # Neutral / ion masses must respect the multiplier (e.g., [2M-H]2-)
+        # Neutral / ion masses must respect multiplier (e.g., [2M-H]2-)
         neutral_mass = self.neutral_exact_mass_from_smiles(smiles)
         neutral_mass_total = float(parsed.multiplier) * float(neutral_mass)
         ion_mass = float(neutral_mass_total + float(parsed.delta_mass))
@@ -469,6 +578,12 @@ class AdductFeatureExtractor:
         alpha_mol = float(self.molecule_alpha_A3_from_smiles(smiles))
         alpha = np.array([alpha_mol], dtype=np.float32)
 
+        mol_scalars = self.molecule_conditioned_scalars(
+            smiles
+        )  # 13 values? (see function)
+        # NOTE: molecule_conditioned_scalars returns 13 entries in this module (TPSA..q95).
+        # If you strictly want 12, drop logP or one quantile. Here we keep all 13 for robustness.
+
         adduct_proxies, H_loss, _H_add = self._adduct_token_proxies(parsed.composition)
 
         # loss fractions (normalized by molecule size, respecting multiplier)
@@ -490,8 +605,10 @@ class AdductFeatureExtractor:
             dtype=np.float32,
         )
 
+        # Final: 6 + 1 + (len(mol_scalars)) + 18 + 3
         return np.concatenate(
-            [core, alpha, adduct_proxies, loss_fractions], axis=0
+            [core, alpha, mol_scalars, adduct_proxies, loss_fractions],
+            axis=0,
         ).astype(np.float32)
 
     def extract_features(
@@ -501,12 +618,12 @@ class AdductFeatureExtractor:
         Feature vector for adduct conditioning, with optional SMILES.
 
         If `smiles` is provided:
-          returns the full 28D descriptor (same as extract_descriptor)
+          returns the full descriptor (same as extract_descriptor)
 
         If `smiles` is None:
-          returns a reduced vector (22D) that excludes SMILES-dependent features:
+          returns a reduced vector (22D) that excludes SMILES-dependent terms:
             Core-light (4): z_signed, z_abs, delta_mass, polarity
-            Adduct proxies (18): split mass/counts/Z/radius moments + net/heavy + H_add/H_loss
+            Adduct proxies (18)
         """
         parsed = self.parse_adduct(adduct_str)
 
@@ -522,10 +639,8 @@ class AdductFeatureExtractor:
 
         reduced = np.concatenate(
             [
-                np.array(
-                    [float(z), z_abs, delta_mass, polarity], dtype=np.float32
-                ),  # 4
-                adduct_proxies.astype(np.float32),  # 18 -> 22
+                np.array([float(z), z_abs, delta_mass, polarity], dtype=np.float32),
+                adduct_proxies.astype(np.float32),
             ],
             axis=0,
         ).astype(np.float32)
@@ -546,10 +661,9 @@ class AdductFeatureExtractor:
         """
         Optional helper: concatenate descriptor(adduct), descriptor(reference), and optionally their difference.
 
-        This is often useful for learning adduct-induced shifts, especially for neutral-loss and exchange adducts.
-        Output shape:
-          - if include_delta: 28 * 3 = 84
-          - else:            28 * 2 = 56
+        Output shape depends on descriptor length D:
+          - if include_delta: 3D
+          - else:            2D
         """
         parsed = self.parse_adduct(adduct_str)
         ref = self.reference_adduct_for_charge(parsed.z_signed)

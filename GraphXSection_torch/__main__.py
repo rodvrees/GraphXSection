@@ -88,6 +88,7 @@ def _setup_wandb(config: Dict[str, Any]) -> None:
         name=run_name,
         config=config,
         mode="online",  # Explicitly set online mode
+        settings=wandb.Settings(init_timeout=300),
     )
 
 

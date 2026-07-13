@@ -210,7 +210,7 @@ def build_datasets_from_separate_files(
         use_adduct_descriptors=use_adduct_descriptors,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
-        feat_include_ref=True,
+        feat_include_ref=False,
     )
 
     valid_dataset, _ = build_dataset_from_df(
@@ -220,7 +220,7 @@ def build_datasets_from_separate_files(
         use_adduct_descriptors=use_adduct_descriptors,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
-        feat_include_ref=True,
+        feat_include_ref=False,
     )
 
     test_dataset, _ = build_dataset_from_df(
@@ -230,7 +230,7 @@ def build_datasets_from_separate_files(
         use_adduct_descriptors=use_adduct_descriptors,
         one_hot_encode_feats=one_hot_encode_feats,
         feature_config_path=feature_config_path,
-        feat_include_ref=True,
+        feat_include_ref=False,
     )
 
     # Create Subset objects with full indices (since each dataset is already the correct split)

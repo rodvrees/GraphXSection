@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep \"python3$\")",
+      "Bash(git -C /mnt/c/Users/robbe/Work/Waters_GNN_SmalMol status --short)",
+      "Bash(git -C /mnt/c/Users/robbe/Work/Waters_GNN_SmalMol check-ignore /mnt/c/Users/robbe/Work/Waters_GNN_SmalMol/checkpoints/best_model-v1.ckpt /mnt/c/Users/robbe/Work/Waters_GNN_SmalMol/outputs/GeneralizedAdducts_SigmaCCS_lightning_model.pth)",
+      "Bash(python3 -)",
+      "Bash(/home/rodvrees/.pyenv/versions/3.10.9/envs/Waters/bin/python -c ' *)",
+      "Bash(curl -s -m 5 -o /dev/null -w \"%{http_code}\\\\n\" \"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/caffeine/cids/JSON\")",
+      "Bash(/home/rodvrees/.pyenv/versions/3.10.9/envs/Waters/bin/python -c 'import requests; print\\(requests.__version__\\)')",
+      "Bash(/home/rodvrees/.pyenv/versions/GXS_torch/bin/python -c ' *)"
+    ]
+  }
+}
