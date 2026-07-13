@@ -436,6 +436,8 @@ class GraphXSectionDataset(Dataset):
         'global_feats': float32 [F] (e.g., adduct OHE),
         'target': float32 [1]
     }
+
+    Supports optional virtual node representation for adducts.
     """
 
     def __init__(
@@ -567,9 +569,26 @@ def _get_data(
     smiles_col: str = "SMILES",
     train: bool = False,
     adduct_encoder: AdductEncoder | None = None,
+    use_adduct_descriptors: bool = True,
+    feat_include_ref: bool = False,
 ) -> GraphXSectionDataset:
-    """Extract data necessary for training from the dataframe and build the dataset."""
+    """Extract data necessary for training from the dataframe and build the dataset.
 
+    Args:
+        df: DataFrame with molecular data
+        smiles_col: Column name for SMILES strings
+        train: Whether this is training data (currently unused but kept for compatibility)
+        adduct_encoder: Legacy AdductEncoder (only used when use_adduct_descriptors=False)
+        use_adduct_descriptors: Whether to use physicochemical descriptors (True, default)
+                               or legacy one-hot encoding (False)
+        feat_include_ref: Whether to include reference-based features in descriptor extraction
+
+    Returns:
+        GraphXSectionDataset with extracted features
+    """
+    input(
+        f"Extracting data from dataframe with {len(df)} samples. Press Enter to continue..."
+    )
     # Remove rows with NaN values in the SMILES column or the global features
     df = df.dropna(
         subset=[
@@ -581,20 +600,47 @@ def _get_data(
     smiles = df[smiles_col].values.tolist()
     adducts = df["Adduct"].values.tolist()
 
-    # Use AdductEncoder if provided, otherwise create a temporary one on this split
-    if adduct_encoder is not None:
-        adduct_OHE = adduct_encoder.transform(df["Adduct"])
+    # Choose between descriptor-based or one-hot encoding approach
+    if use_adduct_descriptors:
+        # Extract physicochemical descriptors for each adduct
+        from GraphXSection_torch.adduct_features import AdductFeatureExtractor
+
+        logger.info("Extracting physicochemical adduct descriptors (vocab-free)")
+        extractor = AdductFeatureExtractor()
+
+        # Extract descriptors for each adduct (includes SMILES information)
+        if not feat_include_ref:
+            all_feats = np.stack(
+                [
+                    extractor.extract_features(adduct, smiles=smi)
+                    for adduct, smi in zip(adducts, smiles)
+                ]
+            ).astype(np.float32)
+        else:
+            all_feats = np.stack(
+                [
+                    extractor.extract_descriptor_with_reference(
+                        adduct, smiles=smi, include_delta=True
+                    )
+                    for adduct, smi in zip(adducts, smiles)
+                ]
+            ).astype(np.float32)
+
+        logger.info(f"Extracted {all_feats.shape[1]}-dimensional descriptors")
     else:
-        logger.warning(
-            "No AdductEncoder provided; fitting a temporary encoder on this dataframe"
-        )
-        _tmp_encoder = AdductEncoder().fit([df["Adduct"]])
-        adduct_OHE = _tmp_encoder.transform(df["Adduct"])
+        # Use AdductEncoder if provided, otherwise create a temporary one on this split
+        if adduct_encoder is not None:
+            adduct_OHE = adduct_encoder.transform(df["Adduct"])
+        else:
+            logger.warning(
+                "No AdductEncoder provided; fitting a temporary encoder on this dataframe"
+            )
+            _tmp_encoder = AdductEncoder().fit([df["Adduct"]])
+            adduct_OHE = _tmp_encoder.transform(df["Adduct"])
+
+        all_feats = adduct_OHE
 
     logger.info("df.columns: %s", df.columns.to_list())
-
-    all_feats = adduct_OHE
-
     logger.info(f"all_feats shape: {all_feats.shape}")
 
     y = df["CCS"].values
@@ -658,37 +704,12 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
     logger.info("Reading data file: %s", config["data_path"])
     data = pd.read_csv(config["data_path"])
 
-    # if config["model"].get("type", None) == "Ginny3D":
-    #     data = pd.read_csv(config["data_path"])
-    #     data.drop(["delta_to_second_best"], axis=1, inplace=True)
-    #     # Remove columns where all values are the same
-    #     data.replace(-1000, np.nan, inplace=True)
-    #     data = _drop_constant_columns(data)
-    #     # Drop columns with NaN values
-    #     logger.info("Dropping columns with NaN values")
-    #     logger.debug(
-    #         "Columns with NaN values: %s", len(data.columns[data.isna().any()])
-    #     )
-    #     data.dropna(axis=1, inplace=True)
-    #     logger.info("Dropped columns with NaN values")
-    #     logger.debug("Remaining columns: %s", len(data.columns))
-
     df_train, df_valid, df_test = _stratified_split(
         data,
         test_split=config["test_split"],
         valid_split=config["valid_split"],
         stratify_col="Adduct",
     )
-
-    # if config["model"].get("type", None) == "Eddy":
-    #     df_train = get_embeddings(df_train, config)
-    #     df_valid = get_embeddings(df_valid, config)
-    #     df_test = get_embeddings(df_test, config)
-    #     df_train["Adduct_OHE"] = _get_adduct_OHE(df_train).tolist()
-    #     df_valid["Adduct_OHE"] = _get_adduct_OHE(df_valid).tolist()
-    #     df_test["Adduct_OHE"] = _get_adduct_OHE(df_test).tolist()
-
-    #     return df_train, df_valid, df_test, None, None
 
     if config.get("save_dfs", False):
         df_train.to_csv(f"{config['output_path']}/train_df.csv", index=False)
@@ -699,48 +720,58 @@ def data_extract(config: Dict[str, Any]) -> Tuple[
         f"Training data shape: {df_train.shape}, {df_valid.shape}, {df_test.shape}"
     )
 
-    # Create and fit AdductEncoder for consistent one-hot encoding across all splits
-    logger.info("Creating AdductEncoder for consistent adduct encoding")
-    adduct_encoder = AdductEncoder()
-    adduct_encoder.fit([df_train["Adduct"], df_valid["Adduct"], df_test["Adduct"]])
+    # Check if using adduct descriptors (recommended for generalization)
+    use_adduct_descriptors = config.get("use_adduct_descriptors", True)
 
-    # Log adduct information for debugging
-    logger.info(f"Adduct encoder vocabulary: {adduct_encoder.adduct_vocabulary}")
-    logger.info(f"Adduct feature names: {adduct_encoder.get_feature_names()}")
+    if use_adduct_descriptors:
+        logger.info(
+            "Using physicochemical adduct descriptors for generalization (vocab-free)"
+        )
+        adduct_encoder = None
+    else:
+        # Create and fit AdductEncoder for consistent one-hot encoding across all splits
+        logger.info(
+            "Creating AdductEncoder for consistent adduct encoding (legacy mode)"
+        )
+        adduct_encoder = AdductEncoder()
+        adduct_encoder.fit([df_train["Adduct"], df_valid["Adduct"], df_test["Adduct"]])
 
-    # Save adduct vocabulary for transfer learning
-    if config.get("save_dfs", False):
-        vocab_path = f"{config['output_path']}/adduct_vocabulary.json"
-        adduct_encoder.save_vocabulary(vocab_path)
+        # Log adduct information for debugging
+        logger.info(f"Adduct encoder vocabulary: {adduct_encoder.adduct_vocabulary}")
+        logger.info(f"Adduct feature names: {adduct_encoder.get_feature_names()}")
+
+        # Save adduct vocabulary for transfer learning
+        if config.get("save_dfs", False):
+            vocab_path = f"{config['output_path']}/adduct_vocabulary.json"
+            adduct_encoder.save_vocabulary(vocab_path)
 
     logger.info("Extracting training data")
+    input("Press Enter to continue...")
     train_dataset = _get_data(
         df_train,
         smiles_col=config.get("smiles_col", "SMILES"),
         train=True,
         adduct_encoder=adduct_encoder,
-        # embeddings=True if config["model"].get("type", None) == "Eddy" else False,
-        # threeD=True if config["model"].get("type", None) == "Ginny3D" else False,
+        use_adduct_descriptors=use_adduct_descriptors,
+        feat_include_ref=config.get("feat_include_ref", False),
     )
 
-    logger.info("Extracting validation and test data using fitted scaler and encoder")
+    logger.info("Extracting validation and test data")
     valid_dataset = _get_data(
         df_valid,
         smiles_col=config.get("smiles_col", "SMILES"),
         train=False,
-        # scaler=scaler,
         adduct_encoder=adduct_encoder,
-        # embeddings=True if config["model"].get("type", None) == "Eddy" else False,
-        # threeD=True if config["model"].get("type", None) == "Ginny3D" else False,
+        use_adduct_descriptors=use_adduct_descriptors,
+        feat_include_ref=config.get("feat_include_ref", False),
     )
     test_dataset = _get_data(
         df_test,
         smiles_col=config.get("smiles_col", "SMILES"),
         train=False,
-        # scaler=scaler,
         adduct_encoder=adduct_encoder,
-        # embeddings=True if config["model"].get("type", None) == "Eddy" else False,
-        # threeD=True if config["model"].get("type", None) == "Ginny3D" else False,
+        use_adduct_descriptors=use_adduct_descriptors,
+        feat_include_ref=config.get("feat_include_ref", False),
     )
 
     logger.info("Data extraction complete")

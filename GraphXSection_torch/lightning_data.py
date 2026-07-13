@@ -7,7 +7,7 @@ import numpy as np
 from typing import Dict, Any, Optional
 import logging
 
-from GraphXSection_torch.data_extract import GraphXSectionDataset, collate_fn
+from GraphXSection_torch.data_extract import collate_fn
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ class GraphXSectionDataModule(pl.LightningDataModule):
             collate_fn=collate_fn,
             num_workers=self.num_workers,
             pin_memory=True if torch.cuda.is_available() else False,
+            persistent_workers=False,  # Disable to prevent memory leaks in sweeps
         )
 
     def val_dataloader(self):
@@ -78,6 +79,7 @@ class GraphXSectionDataModule(pl.LightningDataModule):
             collate_fn=collate_fn,
             num_workers=self.num_workers,
             pin_memory=True if torch.cuda.is_available() else False,
+            persistent_workers=False,  # Disable to prevent memory leaks in sweeps
         )
 
     def test_dataloader(self):
@@ -94,6 +96,7 @@ class GraphXSectionDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             collate_fn=collate_fn,
             pin_memory=True,
+            persistent_workers=False,  # Disable to prevent memory leaks in sweeps
         )
 
     @property
