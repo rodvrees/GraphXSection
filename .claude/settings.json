@@ -8,7 +8,9 @@
       "Bash(/home/rodvrees/.pyenv/versions/3.10.9/envs/Waters/bin/python -c ' *)",
       "Bash(curl -s -m 5 -o /dev/null -w \"%{http_code}\\\\n\" \"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/caffeine/cids/JSON\")",
       "Bash(/home/rodvrees/.pyenv/versions/3.10.9/envs/Waters/bin/python -c 'import requests; print\\(requests.__version__\\)')",
-      "Bash(/home/rodvrees/.pyenv/versions/GXS_torch/bin/python -c ' *)"
+      "Bash(/home/rodvrees/.pyenv/versions/GXS_torch/bin/python -c ' *)",
+      "Bash(/home/rodvrees/.pyenv/versions/GXS_torch/bin/python -c 'import ast; ast.parse\\(open\\('\\\\''/mnt/c/Users/robbe/Work/Waters_GNN_SmalMol/scripts/rank_candidates_pm3.py'\\\\''\\).read\\(\\)\\)')",
+      "Bash(/home/rodvrees/.pyenv/versions/GXS_torch/bin/python scripts/rank_candidates_pm3.py --input outputs/protonation_candidates_csv_smoke.parquet --output outputs/pm3_energies_filtered_test.parquet --limit 10 --n-jobs 8 --timeout-seconds 120)"
     ]
   }
 }

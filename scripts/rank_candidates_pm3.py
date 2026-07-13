@@ -241,6 +241,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--chunk-size", type=int, default=200, help="Rows to buffer before writing to Parquet (default: 200)")
     parser.add_argument("--limit", type=int, default=None, help="Cap on number of candidates to process (for smoke testing)")
     parser.add_argument(
+        "--include-single-candidate-molecules", action="store_true",
+        help=(
+            "Also compute PM3 energy for candidates from single-candidate molecules "
+            "(default: skipped, since there's nothing to rank them against -- see "
+            "the in-code comment in main() for the measured ~24%% savings this skips)"
+        ),
+    )
+    parser.add_argument(
         "--scratch-dir", type=str, default="/dev/shm" if Path("/dev/shm").is_dir() else None,
         help=(
             "Parent directory for per-job ORCA scratch dirs. Defaults to /dev/shm "
@@ -260,6 +268,25 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     candidates_df = pd.read_parquet(args.input)
     candidates_df = candidates_df[candidates_df["candidate_smiles"].notna()]
+
+    if not args.include_single_candidate_molecules:
+        # build_protomer_labels.py's rank_candidates() only uses PM3 energy to
+        # order a molecule's candidates relative to each other. A molecule
+        # with exactly one candidate has nothing to rank against -- it is
+        # always "rank 1" regardless of its absolute energy -- so computing
+        # PM3 for it is wasted work for this purpose (measured at ~24% of all
+        # candidates on a 500-molecule real-data sample). Skipped here by
+        # default; pass --include-single-candidate-molecules to compute PM3
+        # for every candidate regardless (e.g. if you want pm3_energy_hartree
+        # as a general-purpose feature later, not just for ranking).
+        n_before = len(candidates_df)
+        candidates_df = candidates_df[candidates_df["n_candidates"] >= 2]
+        logger.info(
+            "Skipping %d/%d candidates that belong to single-candidate molecules "
+            "(nothing to rank against); use --include-single-candidate-molecules to compute them anyway",
+            n_before - len(candidates_df), n_before,
+        )
+
     if args.limit is not None:
         candidates_df = candidates_df.head(args.limit)
     logger.info(
