@@ -10,7 +10,25 @@
       "Bash(/home/rodvrees/.pyenv/versions/3.10.9/envs/Waters/bin/python -c 'import requests; print\\(requests.__version__\\)')",
       "Bash(/home/rodvrees/.pyenv/versions/GXS_torch/bin/python -c ' *)",
       "Bash(/home/rodvrees/.pyenv/versions/GXS_torch/bin/python -c 'import ast; ast.parse\\(open\\('\\\\''/mnt/c/Users/robbe/Work/Waters_GNN_SmalMol/scripts/rank_candidates_pm3.py'\\\\''\\).read\\(\\)\\)')",
-      "Bash(/home/rodvrees/.pyenv/versions/GXS_torch/bin/python scripts/rank_candidates_pm3.py --input outputs/protonation_candidates_csv_smoke.parquet --output outputs/pm3_energies_filtered_test.parquet --limit 10 --n-jobs 8 --timeout-seconds 120)"
+      "Bash(/home/rodvrees/.pyenv/versions/GXS_torch/bin/python scripts/rank_candidates_pm3.py --input outputs/protonation_candidates_csv_smoke.parquet --output outputs/pm3_energies_filtered_test.parquet --limit 10 --n-jobs 8 --timeout-seconds 120)",
+      "Read(//home/rodvrees/orca_6_0_0/**)",
+      "Bash(grep -i \"^MD$\\\\|GFNFF\\\\|GFN-FF\\\\|MOLECULARDYNAMICS\")",
+      "Bash(mkdir -p /tmp/orca_gfnff_test)",
+      "Bash(/home/rodvrees/orca_6_0_0/orca test.inp)",
+      "Bash(/home/rodvrees/orca_6_0_0/orca_md --help)",
+      "Bash(/home/rodvrees/orca_6_0_0/orca_md -h)",
+      "Bash(strings /home/rodvrees/orca_6_0_0/orca_md 2>/dev/null | grep -iE \"dump|traj|xyzfile|writexyz|snapshot\" | sort -u | head -60)",
+      "Bash(make)",
+      "Bash(./mobcal_shm parameters.in atomtype_parameters.in geom_SMALL_13-042.mfj /tmp/verify.out)",
+      "Bash(/home/rodvrees/.pyenv/versions/3.11.9/envs/GXS_torch/bin/python -c ' *)",
+      "Bash(time timeout 60 /mnt/c/Users/robbe/Work/Waters_GNN_SmalMol/third_party/mobcal-shm/mobcal_shm mobcal.params atomtype_parameters.in debug_static.mfj debug_static.out)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(ipcrm -m 10)",
+      "Bash(ipcrm -m 11)",
+      "Bash(ipcs -m)",
+      "Bash(time timeout 120 /mnt/c/Users/robbe/Work/Waters_GNN_SmalMol/third_party/mobcal-shm/mobcal_shm mobcal.params atomtype_parameters.in debug_static.mfj debug_static4.out)",
+      "Bash(tail -20 /tmp/isicle/tmpet9go6ys/XDDWDDXPIFVSSC_HOTGVXAUSA_N_1_f0.out *)",
+      "Read(//proc/**)"
     ]
   }
 }

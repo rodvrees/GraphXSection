@@ -25,3 +25,9 @@ sweep_configs/
 outputs/
 protomer_eval/
 PFAS_eval/
+third_party/mobcal-shm/*.o
+third_party/mobcal-shm/mobcal_shm
+third_party/mobcal-shm/mobcal
+third_party/
+mobcal_shm
+.claude/settings.json
