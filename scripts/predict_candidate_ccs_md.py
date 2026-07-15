@@ -97,6 +97,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import multiprocessing
 import os
 import re
 import subprocess
@@ -123,7 +124,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_ORCA_BIN = "/home/rodvrees/orca_6_0_0/orca"
+DEFAULT_ORCA_BIN = "/home/robbe/orca_6_0_0/orca"
 DEFAULT_MOBCAL_BIN = str(
     Path(__file__).resolve().parent.parent / "third_party" / "mobcal-shm" / "mobcal_shm"
 )
@@ -330,22 +331,27 @@ def _frame_ccs(
     mobcal_inp: int,
     mobcal_imp: int,
     mobcal_timeout_seconds: int,
+    mobcal_threads: int,
 ) -> Optional[float]:
     import isicle.mobility
 
     geom = _frame_geometry(mol_template, coords, f"{basename}_f{frame_idx}")
     geom._energy = energy_hartree
     geom._charge = charges
-    # Safe to run concurrently across --n-jobs: each call gets its own
-    # temp_dir (fresh per Geometry/wrapper instance), and isicle's
-    # MobcalWrapper.submit() runs mobcal_shm with cwd=temp_dir plus a
-    # per-dir placeholder file, giving each invocation a distinct
-    # shared-memory key (see that function's docstring for why this
-    # matters -- it's the fix for a real, confirmed concurrency bug).
+    # mobcal_shm's trajectory method is COMPUTE-bound and scales strongly with
+    # threads: measured 130s at 2 threads vs 6s at 32 threads for a normal
+    # ~40-atom N2 case (identical CCS). Running many low-thread mobcals
+    # concurrently instead starves them and each blows past the timeout -- so
+    # prefer few concurrent candidates (--n-jobs) each giving mobcal many
+    # threads (--mobcal-threads). Each call still gets its own temp_dir (fresh
+    # per Geometry/wrapper instance) and a distinct shared-memory key via
+    # MobcalWrapper.submit(), so concurrent calls remain safe; --n-jobs *
+    # --mobcal-core-block-size must stay within the core count so the pinned
+    # thread blocks don't overlap.
     wrapper = isicle.mobility.calculate_ccs(
         geom, buffer_gas=buffer_gas, buffer_gas_mass=BUFFER_GAS_MASS[buffer_gas],
         command=mobcal_bin, lennard_jones=atomtype_params,
-        itn=mobcal_itn, inp=mobcal_inp, imp=mobcal_imp, processes=1,
+        itn=mobcal_itn, inp=mobcal_inp, imp=mobcal_imp, processes=mobcal_threads,
         timeout=mobcal_timeout_seconds,
     )
     try:
@@ -357,27 +363,26 @@ def _frame_ccs(
     return ccs["mean"] if ccs else None
 
 
-def _set_mobcal_core_offset(block_size: int) -> None:
-    """mobcal_shm pins its (forked) worker threads to CPU cores 0, 1, 2, ...
-    on every invocation regardless of caller (see fork_and_bind.c, patched
-    to read this) -- concurrent candidates would otherwise all fight over
-    the same 1-2 physical cores no matter how many are available (confirmed
-    directly: several concurrent calls all stalled at the identical point
-    in their output). ProcessPoolExecutor assigns each worker process a
-    stable, unique, sequential identity -- use it as a core-block index so
-    concurrent workers land on disjoint cores. block_size must comfortably
-    exceed the actual cores mobcal_shm's fork tree uses for the configured
-    NUM_THREADS (confirmed empirically: a spacing of 2 was NOT enough
-    headroom and still collided; a spacing of 5 was reliably clean)."""
-    import multiprocessing
+# Shared across pool workers via the executor initializer (below). The slot
+# queue is BOTH the MOBCAL concurrency gate and the core-block assignment:
+# it holds `--mobcal-concurrency` slot indices, so at most that many mobcal_shm
+# calls run at once, and each running call pins its threads to a disjoint core
+# block (slot_index * block_size). This is the key scaling fix: mobcal_shm's
+# N2 trajectory method is compute-bound and scales strongly with threads (~6s
+# at 32 threads vs ~130s at 2), but MULTIPLE concurrent mobcal calls contend
+# catastrophically on a shared resource (memory bandwidth / LLC) even when
+# pinned to disjoint cores -- measured >14x slowdown at 8-way. So the winning
+# model is: parallelize the single-core ORCA MD across many --n-jobs workers,
+# but funnel mobcal through a small gate, each call using many threads.
+_MOBCAL_SLOTS = None  # multiprocessing queue of free slot indices
 
-    identity = multiprocessing.current_process()._identity
-    worker_index = identity[0] if identity else 0
-    os.environ["MOBCAL_CORE_OFFSET"] = str(worker_index * block_size)
+
+def _init_worker(slot_queue) -> None:
+    global _MOBCAL_SLOTS
+    _MOBCAL_SLOTS = slot_queue
 
 
 def predict_candidate_ccs(job: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
-    _set_mobcal_core_offset(args.mobcal_core_block_size)
     result = dict(job)
     smiles = job["candidate_smiles"]
     charge = job["charge_state"]
@@ -412,6 +417,8 @@ def predict_candidate_ccs(job: dict[str, Any], args: argparse.Namespace) -> dict
 
     ccs_values = []
     energies_kcal = []
+    mobcal_attempts = 0  # frames that reached MOBCAL (single-point succeeded)
+    mobcal_timeouts = 0  # of those, how many returned no CCS (MOBCAL timed out)
     for idx, (energy, elements, coords) in enumerate(sampled):
         coords = _quench_frame(mol, coords)
         frame_xyz = "\n".join(
@@ -422,13 +429,39 @@ def predict_candidate_ccs(job: dict[str, Any], args: argparse.Namespace) -> dict
         )
         if sp_status != "ok" or charges is None:
             continue
-        ccs = _frame_ccs(
-            mol, idx, coords, charges, sp_energy, basename,
-            args.mobcal_bin, args.atomtype_params, args.buffer_gas,
-            args.mobcal_itn, args.mobcal_inp, args.mobcal_imp,
-            args.mobcal_timeout_seconds,
-        )
+        # Gate the mobcal call: acquire a slot (blocks if all concurrency
+        # slots are busy), pin this call's threads to that slot's core block,
+        # run, then release the slot. Falls back to ungated offset 0 if the
+        # pool was started without an initializer (e.g. direct import in a
+        # test).
+        slot = _MOBCAL_SLOTS.get() if _MOBCAL_SLOTS is not None else 0
+        os.environ["MOBCAL_CORE_OFFSET"] = str(slot * args.mobcal_core_block_size)
+        try:
+            ccs = _frame_ccs(
+                mol, idx, coords, charges, sp_energy, basename,
+                args.mobcal_bin, args.atomtype_params, args.buffer_gas,
+                args.mobcal_itn, args.mobcal_inp, args.mobcal_imp,
+                args.mobcal_timeout_seconds, args.mobcal_threads,
+            )
+        finally:
+            if _MOBCAL_SLOTS is not None:
+                _MOBCAL_SLOTS.put(slot)
+        mobcal_attempts += 1
         if ccs is None:
+            mobcal_timeouts += 1
+            # Early-skip: some molecules (e.g. sulfonyls, whose PM3 Mulliken
+            # charge on S is unphysically large ~+2.5) create a deep ion-N2
+            # potential well that traps every MOBCAL trajectory to its step
+            # ceiling, so the calculation never finishes and each frame burns
+            # the full --mobcal-timeout-seconds. If the first
+            # --mobcal-early-skip-probes frames that reach MOBCAL ALL time out,
+            # this molecule is intractable for the N2 trajectory method; skip
+            # the remaining frames rather than wasting timeout on each.
+            if (mobcal_attempts >= args.mobcal_early_skip_probes
+                    and mobcal_timeouts == mobcal_attempts):
+                result.update(predicted_ccs=None, predicted_ccs_std=None, n_frames_used=0,
+                               status="mobcal_all_timeout")
+                return result
             continue
         ccs_values.append(ccs)
         energies_kcal.append(sp_energy * HARTREE_TO_KCALMOL)
@@ -503,14 +536,32 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--mobcal-itn", type=int, default=10)
     parser.add_argument("--mobcal-inp", type=int, default=8)
     parser.add_argument("--mobcal-imp", type=int, default=128)
+    parser.add_argument("--mobcal-threads", type=int, default=32,
+                         help="Threads per mobcal_shm call (NUM_THREADS). mobcal is compute-bound "
+                              "and scales ~linearly with threads (130s@2t vs 6s@32t for a normal "
+                              "N2 case). Keep --mobcal-core-block-size >= this value")
+    parser.add_argument("--mobcal-concurrency", type=int, default=1,
+                         help="Max mobcal_shm calls running at once, across ALL --n-jobs workers "
+                              "(a shared gate). Concurrent mobcal calls contend badly on memory "
+                              "bandwidth even pinned to disjoint cores (>14x slowdown at 8-way), so "
+                              "keep this small (1-2) and give each call many --mobcal-threads. MD "
+                              "stays parallel across --n-jobs; only the mobcal step is gated")
     parser.add_argument("--mobcal-timeout-seconds", type=int, default=120,
                          help="Hard per-frame timeout for mobcal_shm, as a backstop; a timed-out "
-                              "frame is simply dropped, not treated as a fatal error")
-    parser.add_argument("--mobcal-core-block-size", type=int, default=5,
-                         help="CPU cores reserved per concurrent worker for mobcal_shm's own "
-                              "core-pinned fork tree (see _set_mobcal_core_offset) -- must exceed "
-                              "--n-jobs * this value's worth of cores actually being available, "
-                              "or concurrent workers will wrap around and collide on cores again")
+                              "frame is simply dropped, not treated as a fatal error. Note the N2 "
+                              "trajectory method is slow (~130s/frame for a normal ~30-atom "
+                              "molecule), so this must comfortably exceed that or normal molecules "
+                              "get dropped -- 300 is a safe value for nitrogen")
+    parser.add_argument("--mobcal-early-skip-probes", type=int, default=2,
+                         help="If the first N frames that reach MOBCAL all time out, treat the "
+                              "molecule as intractable for the trajectory method (e.g. sulfonyls, "
+                              "whose extreme PM3 Mulliken charge traps every N2 trajectory) and "
+                              "skip its remaining frames instead of burning the timeout on each")
+    parser.add_argument("--mobcal-core-block-size", type=int, default=32,
+                         help="CPU cores reserved per concurrent mobcal slot for its core-pinned "
+                              "thread block. Must be >= --mobcal-threads, and --mobcal-concurrency "
+                              "* this must stay within the core count (only --mobcal-concurrency "
+                              "mobcal calls run at once, so this no longer scales with --n-jobs)")
     parser.add_argument("--n-jobs", type=int, default=min(8, os.cpu_count() or 1),
                          help="Concurrent candidates (each MD run is single-core, but reserve "
                               "--n-jobs * --mobcal-core-block-size cores in total, not just "
@@ -554,8 +605,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         writer.write_table(table)
         buffer.clear()
 
+    # Shared mobcal gate: a queue pre-filled with `--mobcal-concurrency` slot
+    # indices, handed to every worker via the pool initializer. See
+    # predict_candidate_ccs / _init_worker for why mobcal is gated this way.
+    manager = multiprocessing.Manager()
+    slot_queue = manager.Queue()
+    for slot in range(max(1, args.mobcal_concurrency)):
+        slot_queue.put(slot)
+
     try:
-        with ProcessPoolExecutor(max_workers=args.n_jobs) as executor:
+        with ProcessPoolExecutor(
+            max_workers=args.n_jobs, initializer=_init_worker, initargs=(slot_queue,)
+        ) as executor:
             futures = [executor.submit(predict_candidate_ccs, job, args) for job in jobs]
             for future in tqdm(as_completed(futures), total=len(futures), desc="Predicting candidate CCS (ORCA MD + MOBCAL)"):
                 result = future.result()

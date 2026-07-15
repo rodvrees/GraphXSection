@@ -28,7 +28,28 @@
       "Bash(ipcs -m)",
       "Bash(time timeout 120 /mnt/c/Users/robbe/Work/Waters_GNN_SmalMol/third_party/mobcal-shm/mobcal_shm mobcal.params atomtype_parameters.in debug_static.mfj debug_static4.out)",
       "Bash(tail -20 /tmp/isicle/tmpet9go6ys/XDDWDDXPIFVSSC_HOTGVXAUSA_N_1_f0.out *)",
-      "Read(//proc/**)"
+      "Read(//proc/**)",
+      "Bash(ps -p 1308685 -o pid,etimes,stat,cmd)",
+      "Bash(/home/robbe/.pyenv/versions/GXS/bin/python -c \"import isicle; print\\('isicle OK:', isicle.__file__\\)\")",
+      "Bash(./mobcal_shm parameters.in atomtype_parameters.in geom_SMALL_13-042.mfj /tmp/claude-1017/-home-robbe-GraphXSection/7447e3e0-7494-438c-a7a0-dc89e68aa4dc/scratchpad/mobcal_test_out.txt)",
+      "Bash(echo \"exit code: $?\")",
+      "Bash(/home/robbe/.pyenv/versions/GXS/bin/python /tmp/claude-1017/-home-robbe-GraphXSection/7447e3e0-7494-438c-a7a0-dc89e68aa4dc/scratchpad/debug_pipeline.py)",
+      "Bash(ps -o pid,etimes,%cpu,cmd -p 2998423,2998434,2998164,2998175,2997865,2997875)",
+      "Bash(kill -9 2997865 2997875 2998164 2998175 2998423 2998434)",
+      "Bash(kill -9 2991567 2991575)",
+      "Bash(kill -TERM 1308900 1308901 1308902 1308903 1308904 1308905 1308906 1308907 1308908 1308909 1308910 1308911 1308912 1308913 1308914 1308915 1308916 1308917 1308918 1308919)",
+      "Bash(kill -9 2921872 2921879 2922177 2922180 2922480 2922487)",
+      "Read(//home/robbe/isicle/isicle/**)",
+      "Bash(pkill -9 -f \"mobcal_shm\")",
+      "Bash(/home/robbe/.pyenv/versions/GXS/bin/python -u /tmp/claude-1017/-home-robbe-GraphXSection/7447e3e0-7494-438c-a7a0-dc89e68aa4dc/scratchpad/check_charges.py)",
+      "Bash(/home/robbe/.pyenv/versions/GXS/bin/python -c ' *)",
+      "Bash(ps -o etimes -C mobcal_shm --no-headers)",
+      "Bash(awk 'NR==1{min=$1} {max=$1} END{print \"count=\"NR\"  min_elapsed=\"min\"s  max_elapsed=\"max\"s\"}')",
+      "Bash(pkill -9 -f mobcal_shm)",
+      "Bash(timeout 115 /home/robbe/.pyenv/versions/GXS/bin/python -u /tmp/claude-1017/-home-robbe-GraphXSection/7447e3e0-7494-438c-a7a0-dc89e68aa4dc/scratchpad/test_wrapper32.py)"
+    ],
+    "additionalDirectories": [
+      "/home/robbe/isicle/isicle"
     ]
   }
 }
