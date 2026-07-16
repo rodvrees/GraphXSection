@@ -46,6 +46,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _rank_column(df: pd.DataFrame) -> str:
+    """build_protomer_labels.py's rank column has gone by more than one name
+    across runs of this pipeline (confirmed directly: a model2.parquet seen
+    in practice used "pka_rank" + "weak_pka_rank"/"unambiguous_single_site"
+    match_confidence values, rather than this repo's current
+    build_protomer_labels.py, which still writes "candidate_rank" +
+    "ranking_source"/"weak_rank_<source>"). Accept either rather than
+    hard-failing on a KeyError."""
+    for candidate in ("candidate_rank", "pka_rank"):
+        if candidate in df.columns:
+            return candidate
+    raise KeyError(
+        f"No recognized rank column (tried candidate_rank, pka_rank) in columns: {df.columns.tolist()}"
+    )
+
+
 def compare_group(group_key: tuple[str, int], model2_group: pd.DataFrame, predicted_group: pd.DataFrame) -> Optional[dict]:
     inchikey, charge_state = group_key
 
@@ -56,7 +72,8 @@ def compare_group(group_key: tuple[str, int], model2_group: pd.DataFrame, predic
     if len(merged) < 2 or merged["predicted_ccs"].isna().any():
         return None
 
-    merged = merged.sort_values("candidate_rank").reset_index(drop=True)
+    rank_col = _rank_column(merged)
+    merged = merged.sort_values(rank_col).reset_index(drop=True)
     n = len(merged)
     observed = merged["observed_ccs"].to_numpy()
     predicted = merged["predicted_ccs"].to_numpy()
@@ -79,7 +96,7 @@ def compare_group(group_key: tuple[str, int], model2_group: pd.DataFrame, predic
         "charge_state": charge_state,
         "n_candidates": n,
         "match_confidence": merged["match_confidence"].iloc[0],
-        "ranking_source": merged["ranking_source"].iloc[0],
+        "ranking_source": merged["ranking_source"].iloc[0] if "ranking_source" in merged.columns else None,
         "positional_assignment_agrees_with_nearest_ccs": agrees,
         "positional_total_abs_error": positional_cost,
         "nearest_ccs_total_abs_error": nearest_cost,

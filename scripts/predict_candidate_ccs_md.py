@@ -124,7 +124,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_ORCA_BIN = "/home/robbe/orca_6_0_0/orca"
+DEFAULT_ORCA_BIN = "/home/rodvrees/orca_6_0_0/orca"
 DEFAULT_MOBCAL_BIN = str(
     Path(__file__).resolve().parent.parent / "third_party" / "mobcal-shm" / "mobcal_shm"
 )
@@ -498,14 +498,28 @@ OUTPUT_SCHEMA = pa.schema(
 )
 
 
-def select_validation_candidates(model2_df: pd.DataFrame, n_molecules: Optional[int], seed: int) -> pd.DataFrame:
-    """Multi-candidate groups only (nothing to validate for
-    unambiguous_single_site groups); optionally a random subset of
-    molecules, matching roadmap Step 5's ~30-100 molecule validation scope."""
-    group_sizes = model2_df.groupby(["inchikey", "charge_state"]).size()
-    multi_groups = group_sizes[group_sizes >= 2].index
-    df = model2_df.set_index(["inchikey", "charge_state"]).loc[multi_groups].reset_index()
-    df = df[df["match_confidence"] != "unambiguous_single_site"]
+def select_validation_candidates(
+    model2_df: pd.DataFrame, n_molecules: Optional[int], seed: int, candidate_pool: str = "multi",
+) -> pd.DataFrame:
+    """candidate_pool="multi" (default): multi-candidate groups only, for
+    validating build_protomer_labels.py's candidate<->peak matching --
+    nothing to validate for unambiguous_single_site groups there, since
+    matching is trivial (one candidate, one peak).
+
+    candidate_pool="single": the unambiguous_single_site groups themselves
+    -- NOT a matching check (there's nothing to match), but a check of
+    absolute predicted-vs-observed CCS accuracy on the cases with the least
+    label ambiguity, complementing the multi-candidate matching validation
+    (see matching_validation_breakdown.ipynb's "predicted vs observed CCS"
+    section, added on request alongside the existing rank-1/primary-role
+    comparison, which used the "multi" pool's own primary rows)."""
+    if candidate_pool == "single":
+        df = model2_df[model2_df["match_confidence"] == "unambiguous_single_site"].copy()
+    else:
+        group_sizes = model2_df.groupby(["inchikey", "charge_state"]).size()
+        multi_groups = group_sizes[group_sizes >= 2].index
+        df = model2_df.set_index(["inchikey", "charge_state"]).loc[multi_groups].reset_index()
+        df = df[df["match_confidence"] != "unambiguous_single_site"]
 
     if n_molecules is not None:
         keys = df[["inchikey", "charge_state"]].drop_duplicates()

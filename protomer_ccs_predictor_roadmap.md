@@ -13,6 +13,18 @@ Both models must be trainable from the existing dataset (~185,000 molecules, ~97
 
 Model 1's positive label and Model 2's training pairs come from the same ambiguous source: an observed secondary CCS peak. A peak only counts as protomer evidence if Model 2 can assign it to a specific charge-positioned candidate with a defensible CCS match. Building them together, sharing features and possibly a representation, is more consistent than building them in isolation.
 
+## Findings update (2026-07): what a ground-truth test changed
+
+A validation exercise (matching_validation_breakdown.ipynb) plus a danofloxacin ground-truth test (two experimentally confirmed protomers: keto-O+ at 181.7 Å², aliphatic-amine-N+ at 193.7 Å²) revised several assumptions below. The chosen implementation strategy is "tight a-priori screen, then full QM validation on survivors" (see the accompanying plan). Key changes, folded into the steps:
+
+- **The CCS engine works and is the trustworthy part.** ORCA-PM3-MD + MOBCAL (scripts/predict_candidate_ccs_md.py) reproduced danofloxacin's real ±12 Å² protomer split to ~1 Å² (predicted gap +13.1 vs observed +12.0), ordering correct. Ordinary CCS models (GraphXSection) under-predict this gap; closing it is the whole point of Model 2.
+- **Enumeration must be N/O/S, not N-only (Step 1).** The original nitrogen-only enumeration could not represent danofloxacin's keto-O+ protomer at all. scripts/enumerate_protonation_candidates.py is now widened to enumerate every N/O/S site; dimorphite-dl only annotates solution pKa.
+- **Match by predicted CCS, not by energy/pKa ranking (Step 2).** Nearest-predicted-CCS matching assigned danofloxacin's protomers to the right peaks; ranking cannot, because it assumes most-stable = most-intense, which kinetic trapping breaks.
+- **Do NOT gate on gas-phase energy / proton-affinity gaps.** Danofloxacin's protomers differ by ~18 kcal/mol in gas-phase energy yet both are observed: populations are set in solution (pKa) and kinetically trapped into the gas phase, not re-equilibrated. A large gap does not mean "one protomer".
+- **pKa (solution) ≠ proton affinity (gas phase).** The pipeline's `pka_mean` is a Dimorphite-DL solution-pKa lookup, NOT a proton affinity (this doc previously conflated them). Keep both as Model 1 descriptors, neither as a gate.
+- **Model 2 trains on validated multi-peak protomer pairs only, NOT single-site molecules** (they carry no protomer signal and dilute the gap the model must learn).
+- **A cheap a-priori screen (scripts/screen_protomer_candidates.py) decides which multi-peak molecules get expensive QM:** ≥2 enumerated sites AND ≥2 protomer-relevant sites (basic N or carbonyl O). Calibrated to keep danofloxacin/ciprofloxacin/benzocaine/PABA and drop single-site amines and all-ether-O sugars.
+
 ## Step 1: Generate charge-positioned candidate structures for every molecule
 
 For each of the ~97,000 [M+H]+ molecules, enumerate distinct protonation-site candidates from the 2D SMILES:

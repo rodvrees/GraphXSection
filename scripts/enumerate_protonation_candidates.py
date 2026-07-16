@@ -5,6 +5,19 @@ candidate structure per distinct ionizable site, for every molecule observed as
 [M+H]+ (basic sites -> +1 candidates) or [M-H]- (acidic sites -> -1 candidates)
 in the Enveda-180 dataset.
 
+[M+H]+ enumeration is WIDENED to nitrogen, oxygen AND sulfur sites (every N/O/S
+atom is a candidate protonation site; see enumerate_basic_heteroatom_sites and
+build_candidate_smiles_generic). This was added after the danofloxacin
+ground-truth test: its confirmed keto-O+ protomer is an oxygen protonation that
+a nitrogen-only enumeration could never represent. Dimorphite-DL is still used
+to *annotate* solution pKa on the basic-N sites it recognizes, but it no longer
+defines the [M+H]+ candidate set, and no energy/pKa gating is applied here (a
+large gas-phase energy gap does NOT rule out a second observed protomer, because
+populations are set in solution and kinetically trapped -- danofloxacin's two
+protomers differ by ~18 kcal/mol yet both are observed). Amide/vinylogous-amide
+nitrogens are excluded (they protonate on the carbonyl O, which is enumerated).
+[M-H]- (deprotonation) still uses Dimorphite-DL's acidic-site detection unchanged.
+
 Uses Dimorphite-DL's SMARTS/pKa site-detection layer
 (dimorphite_dl.protonate.detect.ProtonationSiteDetector), not its top-level
 pH-window API: site detection is pH-independent, which is what "one candidate per
@@ -477,6 +490,110 @@ def is_adjacent_to_carbonyl(mol: Chem.Mol, atom_idx: int) -> bool:
     return False
 
 
+# --------------------------------------------------------------------------- #
+# Widened [M+H]+ site enumeration (N/O/S), added per the danofloxacin finding
+# --------------------------------------------------------------------------- #
+# The original enumeration was nitrogen-only (dimorphite-dl's basic-site SMARTS
+# only fire on N), so an O-protonated protomer -- e.g. danofloxacin's keto-O+,
+# a confirmed experimental protomer -- could never be represented. Protonation
+# can also occur on O and S, so for [M+H]+ every N/O/S atom is now enumerated
+# as a candidate (superset of dimorphite's basic-N sites). dimorphite-dl is
+# still used, but only to *annotate* solution pKa on the atoms it recognizes;
+# it no longer defines the candidate set. Ranking/gating by energy or pKa is
+# deliberately NOT done here (kinetic trapping from solution means a large
+# gas-phase energy gap does not rule out a second observed protomer -- see the
+# danofloxacin ground-truth test), so all sites are emitted and left for the
+# downstream CCS-based matching + QM validation to sort out.
+PROTONATABLE_ELEMENTS_POS = (7, 8, 16)  # N, O, S
+
+
+def site_type_name(mol: Chem.Mol, atom_idx: int) -> str:
+    """A short, chemically-descriptive label for a generic protonation site
+    (used when the atom is not one of dimorphite-dl's named basic-N classes)."""
+    atom = mol.GetAtomWithIdx(atom_idx)
+    el = atom.GetSymbol()
+    if atom.GetIsAromatic():
+        return f"aromatic_{el}"
+    if atom.GetAtomicNum() == 8:
+        if any(b.GetBondTypeAsDouble() == 2.0 for b in atom.GetBonds()):
+            return "carbonyl_O"
+        return "hydroxyl_O" if atom.GetTotalNumHs() > 0 else "ether_O"
+    if atom.GetAtomicNum() == 7:
+        return "amine_N"
+    if atom.GetAtomicNum() == 16:
+        return "sulfur_S"
+    return f"other_{el}"
+
+
+def enumerate_basic_heteroatom_sites(mol: Chem.Mol) -> list[int]:
+    """Every N/O/S atom is a candidate [M+H]+ protonation site, except:
+    already-cationic atoms (nothing to protonate), and amide/vinylogous-amide
+    nitrogens (those protonate on the carbonyl O, not the N -- the carbonyl O
+    is itself enumerated here, so the site is kept, just moved to the right
+    atom; see is_adjacent_to_carbonyl and the danofloxacin amide-fix note)."""
+    sites: list[int] = []
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() not in PROTONATABLE_ELEMENTS_POS:
+            continue
+        if atom.GetFormalCharge() != 0:
+            continue
+        if atom.GetAtomicNum() == 7 and is_adjacent_to_carbonyl(mol, atom.GetIdx()):
+            continue
+        sites.append(atom.GetIdx())
+    return sites
+
+
+def build_plus_site_records(
+    mol: Chem.Mol, dimorphite_sites: list[ProtonationSite]
+) -> dict[int, dict[str, Any]]:
+    """Per-atom records for the widened [M+H]+ candidate set: all N/O/S sites
+    (enumerate_basic_heteroatom_sites), annotated with dimorphite-dl's solution
+    pKa wherever the atom is one of its recognized basic-N sites, else pKa=None
+    (most O/S sites have no tabulated pKa -- that is expected, pKa is a
+    descriptor here, not a filter)."""
+    pka_lookup = collapse_duplicate_atoms(mol, dimorphite_sites, "+1")
+    by_atom: dict[int, dict[str, Any]] = {}
+    for atom_idx in enumerate_basic_heteroatom_sites(mol):
+        if atom_idx in pka_lookup:
+            rec = dict(pka_lookup[atom_idx])
+            rec["site_names"] = set(rec["site_names"]) | {site_type_name(mol, atom_idx)}
+        else:
+            rec = {"site_names": {site_type_name(mol, atom_idx)}, "pka_mean": None, "pka_stdev": None}
+        by_atom[atom_idx] = rec
+    return by_atom
+
+
+def build_candidate_smiles_generic(
+    mol: Chem.Mol, atom_idx: int, target_charge: int
+) -> tuple[Optional[str], Optional[str]]:
+    """Element-agnostic protonation for the widened N/O/S site set: add one H
+    and a +1 formal charge to the target atom, sanitize, and verify the total
+    charge landed at +1. Unlike build_candidate_smiles (which delegates to
+    dimorphite-dl's set_protonation_charge and only handles its named N site
+    types), this works for O and S sites too, and -- deliberately -- does NOT
+    silently drop fully-conjugated aromatic N's the way dimorphite-dl's special
+    case does: an aromatic-N protomer is a legitimate candidate to hand to the
+    downstream CCS/QM validation rather than to exclude a priori."""
+    m = Chem.Mol(mol)
+    atom = m.GetAtomWithIdx(atom_idx)
+    atom.SetFormalCharge(atom.GetFormalCharge() + 1)
+    atom.SetNumExplicitHs(atom.GetTotalNumHs() + 1)
+    atom.SetNoImplicit(True)
+    try:
+        atom.UpdatePropertyCache(strict=True)
+        Chem.SanitizeMol(m)
+        # detect_sites' mol carries explicit Hs; strip them so the canonical
+        # SMILES matches the rest of the pipeline's implicit-H form (and the
+        # hand-built danofloxacin protomers already validated against MOBCAL).
+        m = Chem.RemoveHs(m)
+    except Exception as exc:  # noqa: BLE001 - invalid valence (e.g. hypervalent O) -> reject
+        logger.debug("Generic protonation failed at atom %d: %s", atom_idx, exc)
+        return None, "sanitize_error"
+    if Chem.GetFormalCharge(m) != target_charge:
+        return None, "wrong_charge"
+    return Chem.MolToSmiles(m, isomericSmiles=True, canonical=True), None
+
+
 def build_candidate_smiles(
     mol: Chem.Mol, atom_idx: int, target_charge: int, site_name: str
 ) -> tuple[Optional[str], Optional[str]]:
@@ -538,7 +655,15 @@ def generate_candidates_for_molecule(
         if not has_polarity:
             continue
 
-        by_atom = collapse_duplicate_atoms(mol, sites, polarity)
+        # [M+H]+ uses the widened N/O/S enumeration (build_plus_site_records +
+        # build_candidate_smiles_generic); [M-H]- keeps dimorphite-dl's acidic
+        # site detection + charge-setting unchanged. The widening applies to
+        # protonation, which is where the missing O-protomers (danofloxacin's
+        # keto-O+) were.
+        if charge_state == 1:
+            by_atom = build_plus_site_records(mol, sites)
+        else:
+            by_atom = collapse_duplicate_atoms(mol, sites, polarity)
         representatives = collapse_symmetry(mol, by_atom)
 
         if not representatives:
@@ -547,16 +672,21 @@ def generate_candidates_for_molecule(
             continue
 
         # Build every representative first; n_candidates must reflect the
-        # surviving count (dimorphite-dl can silently fail to assign a charge
-        # for some sites -- see build_candidate_smiles docstring -- so the
-        # pre-build representative count would overstate it, e.g. caffeine
-        # goes from 4 representatives down to 1 real candidate).
+        # surviving count (a generic protonation can still fail sanitization on
+        # an invalid valence, and dimorphite-dl can silently fail to assign a
+        # charge for some -1 sites -- so the pre-build representative count
+        # would overstate it).
         built: list[dict[str, Any]] = []
         for atom_idx, symmetry_group in representatives:
             rec = by_atom[atom_idx]
-            candidate_smiles, failure_reason = build_candidate_smiles(
-                mol, atom_idx, charge_state, next(iter(rec["site_names"]))
-            )
+            if charge_state == 1:
+                candidate_smiles, failure_reason = build_candidate_smiles_generic(
+                    mol, atom_idx, charge_state
+                )
+            else:
+                candidate_smiles, failure_reason = build_candidate_smiles(
+                    mol, atom_idx, charge_state, next(iter(rec["site_names"]))
+                )
             if candidate_smiles is None:
                 stats_counter[f"candidate_build_failed_{failure_reason}"] += 1
                 continue

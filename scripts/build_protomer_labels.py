@@ -78,11 +78,17 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from scipy.optimize import linear_sum_assignment
 
-from enumerate_protonation_candidates import build_secondary_species_table, load_spectra
+from enumerate_protonation_candidates import (
+    DIMER_THRESH,
+    build_secondary_species_table,
+    load_spectra,
+)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -235,6 +241,60 @@ def rank_candidates(group: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     return group.sort_values("pka_mean", ascending=False).reset_index(drop=True), "pka_mean"
 
 
+# --------------------------------------------------------------------------- #
+# Step 4 (revised plan): nearest-CCS matching. Instead of pairing peaks to
+# candidates by a proton-affinity / pKa *ranking* (which assumes most-stable =
+# most-intense -- broken by kinetic trapping, per the danofloxacin ground-truth
+# finding), assign each observed peak to the candidate whose QM-predicted CCS is
+# closest to it. Single-site molecules carry no protomer signal and are dropped.
+# pKa (solution) and a within-molecule relative proton-affinity descriptor (from
+# QM energies) are carried as *descriptor* columns, never as a matching gate.
+# --------------------------------------------------------------------------- #
+
+HARTREE_TO_KCAL = 627.5095
+
+
+def relative_pa_kcal(energies_hartree: "pd.Series | list[float]") -> list[float]:
+    """Within-molecule relative gas-phase proton affinity descriptor, in
+    kcal/mol, one value per candidate.
+
+    PA of a site = -(E_protonated - E_neutral) * 627.5095. The neutral reference
+    is common to every site of the same molecule, so it cancels when comparing
+    sites *within* a molecule: the most stable protonated site (lowest energy)
+    has the highest PA. We report each site as its destabilization above that
+    most stable site, i.e. delta = (E_i - E_min) * 627.5095 kcal/mol, so 0 marks
+    the highest-PA site and larger values mark progressively lower-PA sites.
+    This is a relative, within-molecule descriptor only; it is NOT an absolute
+    cross-molecule PA and is deliberately NOT used to gate matching."""
+    e = np.asarray(list(energies_hartree), dtype=float)
+    if e.size == 0 or np.all(np.isnan(e)):
+        return [float("nan")] * e.size
+    return list((e - np.nanmin(e)) * HARTREE_TO_KCAL)
+
+
+def match_by_nearest_ccs(
+    predicted_ccs: "list[float]", observed_peaks: "list[float]"
+) -> list[tuple[int, int]]:
+    """Optimal one-to-one assignment of observed peaks to candidates by nearest
+    predicted CCS. Returns (candidate_index, peak_index) pairs, min(n_cand,
+    n_peak) of them, minimizing total |predicted - observed| (Hungarian
+    algorithm). Candidates with a NaN predicted CCS are excluded from matching.
+
+    Assignment is global (bipartite), not greedy per peak: two peaks are never
+    assigned the same candidate, and the pairing minimizes total CCS residual
+    rather than locking in whichever peak is processed first. For the common
+    2-peak / >=2-candidate case this reduces to the intuitive nearest match but
+    stays correct when candidate predictions are close together."""
+    pred = np.asarray(predicted_ccs, dtype=float)
+    obs = np.asarray(observed_peaks, dtype=float)
+    valid = np.where(~np.isnan(pred))[0]
+    if valid.size == 0 or obs.size == 0:
+        return []
+    cost = np.abs(pred[valid][:, None] - obs[None, :])
+    rows, cols = linear_sum_assignment(cost)
+    return [(int(valid[r]), int(c)) for r, c in zip(rows, cols)]
+
+
 def match_candidates_to_peaks(
     candidates_pol: pd.DataFrame, peak_table: pd.DataFrame, charge_state: int
 ) -> tuple[list[dict], dict[str, int]]:
@@ -316,6 +376,148 @@ def build_model2_pairs(
     rows, stats = match_candidates_to_peaks(candidates_pol, peak_table, charge_state)
     result = pd.DataFrame(rows)
     logger.info("Model 2 pairs (charge=%+d): %d pairs -- %s", charge_state, len(result), stats)
+    return result, stats
+
+
+# --------------------------------------------------------------------------- #
+# Step 4 nearest-CCS Model 2 builder (supersedes the rank-based path above)
+# --------------------------------------------------------------------------- #
+
+# Conformer/protomer band on the secondary-to-primary CCS ratio, confirmed by
+# visual inspection of the ratio distribution: keep secondary peaks whose
+# |ratio - 1| is in [2%, 15%]. Below 2% is peak-picking noise / repeatability;
+# above 15% (up to the 1.25 dimer threshold) is treated as ambiguous co-elution
+# and left out of Model 2, since matching a candidate to a peak we do not trust
+# as a real protomer/conformer would only inject bad labels. Danofloxacin's
+# real split (6.6%) sits inside this band; the roadmap's older >=8% (spread
+# 1.08) "protomer" floor would have excluded it.
+CONFORMER_BAND_LOW = 0.02
+CONFORMER_BAND_HIGH = 0.15
+PEAK_CLUSTER_TOL = 0.01  # collapse secondary peaks within 1% of each other
+
+
+def build_clean_peak_table(
+    spectra_df: pd.DataFrame,
+    charge_state: int,
+    band_low: float = CONFORMER_BAND_LOW,
+    band_high: float = CONFORMER_BAND_HIGH,
+) -> pd.DataFrame:
+    """One row per inchikey: observed peaks for nearest-CCS matching, primary
+    first. Primary = median primary CCS across the molecule's spectra of this
+    polarity. Secondary peaks = clean secondaries (ratio <= DIMER_THRESH, so no
+    dimers) whose |ratio - 1| falls in the conformer band [band_low, band_high];
+    near-duplicate secondaries (within PEAK_CLUSTER_TOL) are collapsed to their
+    median. This replaces build_peak_table, which took every ccs_species value
+    with NO dimer filter and so admitted dimer peaks as "secondary"."""
+    adduct_regex = ADDUCT_REGEX_BY_CHARGE[charge_state]
+    pol = spectra_df[spectra_df["adduct"].str.contains(adduct_regex, regex=True, na=False)].copy()
+    pol = pol[pol["ccs_f"].notna() & (pol["ccs_f"] > 0)]
+    primary_by_mol = pol.groupby("inchikey")["ccs_f"].median()
+
+    multi = build_secondary_species_table(spectra_df)
+    multi = multi[multi["adduct"].str.contains(adduct_regex, regex=True, na=False)].copy()
+    multi["gap"] = (multi["ratio"] - 1.0).abs()
+    band = multi[
+        (multi["ratio"] <= DIMER_THRESH) & (multi["gap"] >= band_low) & (multi["gap"] <= band_high)
+    ]
+    sec_by_mol = band.groupby("inchikey")["sp_ccs"].apply(list).to_dict()
+
+    rows = []
+    for inchikey, prim in primary_by_mol.items():
+        secs = sorted(sec_by_mol.get(inchikey, []))
+        clusters: list[list[float]] = []
+        for v in secs:
+            if clusters and abs(v - clusters[-1][-1]) / v <= PEAK_CLUSTER_TOL:
+                clusters[-1].append(v)
+            else:
+                clusters.append([v])
+        sec_vals = [float(np.median(c)) for c in clusters]
+        rows.append(
+            {
+                "inchikey": inchikey,
+                "peak_values": [float(prim)] + sec_vals,  # primary first
+                "n_secondary": len(sec_vals),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_model2_pairs_ccs(
+    spectra_df: pd.DataFrame,
+    candidates_df: pd.DataFrame,
+    predicted_ccs_df: pd.DataFrame,
+    charge_state: int,
+    ccs_column: str,
+    band_low: float = CONFORMER_BAND_LOW,
+    band_high: float = CONFORMER_BAND_HIGH,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Nearest-CCS Model 2 pairing (Step 4). Each observed peak is assigned to
+    the candidate whose QM-predicted CCS is closest to it (match_by_nearest_ccs),
+    NOT by any energy/pKa ranking. Drops single-site molecules and molecules
+    with no in-band secondary peak. pka_mean and a within-molecule relative-PA
+    descriptor (rel_pa_kcal, from dft_energy_hartree when present) are carried as
+    descriptor columns only. `ccs_residual` (|predicted - observed|) is retained
+    as a per-pair match-quality flag."""
+    cand = candidates_df[
+        (candidates_df["charge_state"] == charge_state) & candidates_df["candidate_smiles"].notna()
+    ].copy()
+    merge_cols = ["inchikey", "charge_state", "candidate_smiles"]
+    pred_cols = merge_cols + [c for c in predicted_ccs_df.columns if c not in cand.columns]
+    cand = cand.merge(predicted_ccs_df[pred_cols], on=merge_cols, how="left")
+
+    peaks_by_mol = {
+        r.inchikey: r.peak_values
+        for r in build_clean_peak_table(spectra_df, charge_state, band_low, band_high).itertuples(index=False)
+    }
+
+    stats = {
+        "pairs": 0, "molecules_matched": 0, "dropped_single_site": 0,
+        "dropped_no_in_band_secondary": 0, "dropped_no_prediction": 0,
+    }
+    rows: list[dict] = []
+    for inchikey, group in cand.groupby("inchikey"):
+        group = group.reset_index(drop=True)
+        if len(group) < 2:
+            stats["dropped_single_site"] += 1
+            continue
+        peak_values = peaks_by_mol.get(inchikey)
+        if peak_values is None or len(peak_values) < 2:
+            stats["dropped_no_in_band_secondary"] += 1
+            continue
+        pred = group[ccs_column].tolist()
+        if all(pd.isna(p) for p in pred):
+            stats["dropped_no_prediction"] += 1
+            continue
+        rel_pa = (
+            relative_pa_kcal(group["dft_energy_hartree"])
+            if "dft_energy_hartree" in group.columns else [float("nan")] * len(group)
+        )
+        stats["molecules_matched"] += 1
+        for cand_idx, peak_idx in match_by_nearest_ccs(pred, peak_values):
+            c = group.iloc[cand_idx]
+            obs = peak_values[peak_idx]
+            pred_ccs = c[ccs_column]
+            rows.append(
+                {
+                    "inchikey": inchikey,
+                    "charge_state": charge_state,
+                    "candidate_smiles": c["candidate_smiles"],
+                    "charged_atom_idx": c["charged_atom_idx"],
+                    "observed_ccs": obs,
+                    "predicted_ccs": pred_ccs,
+                    "ccs_residual": abs(pred_ccs - obs) if pd.notna(pred_ccs) else float("nan"),
+                    "peak_role": "primary" if peak_idx == 0 else "secondary",
+                    "match_confidence": "ccs_nearest",
+                    "pka_mean": c.get("pka_mean"),
+                    "rel_pa_kcal": rel_pa[cand_idx],
+                    "dft_energy_hartree": c.get("dft_energy_hartree"),
+                    "site_names": c.get("site_names"),
+                }
+            )
+            stats["pairs"] += 1
+
+    result = pd.DataFrame(rows)
+    logger.info("Model 2 nearest-CCS pairs (charge=%+d): %d pairs -- %s", charge_state, len(result), stats)
     return result, stats
 
 

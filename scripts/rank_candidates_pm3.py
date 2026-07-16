@@ -70,7 +70,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_ORCA_BIN = "/home/robbe/orca_6_0_0/orca"
+DEFAULT_ORCA_BIN = "/home/rodvrees/orca_6_0_0/orca"
 FINAL_ENERGY_RE = re.compile(r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)")
 
 
