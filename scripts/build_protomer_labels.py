@@ -295,6 +295,54 @@ def match_by_nearest_ccs(
     return [(int(valid[r]), int(c)) for r, c in zip(rows, cols)]
 
 
+def match_by_anchored_ccs(
+    predicted_ccs: "list[float]", observed_peaks: "list[float]"
+) -> "tuple[list[tuple[int, int]], float, Optional[int]]":
+    """Anchor-offset assignment. observed_peaks[0] is the anchor: the most
+    intense / base IM peak (build_clean_peak_table puts the primary first).
+
+      1. Assign the anchor peak to its nearest predicted candidate.
+      2. offset = obs_anchor - pred_anchor; add it to every prediction. This is
+         a pure translation -- it removes the model's absolute-CCS bias without
+         changing any inter-candidate gap, so the offset's only effect is on
+         which candidate a *secondary* peak is assigned to.
+      3. Hungarian-assign the remaining candidates to the remaining peaks by
+         nearest *shifted* prediction.
+
+    Returns (matches, offset, anchor_cand_idx):
+      matches          list of (candidate_index, peak_index) into the ORIGINAL
+                       (unshifted) arrays, including the anchor pair; length
+                       min(n_valid_cand, n_peak).
+      offset           applied translation, obs_anchor - pred_anchor.
+      anchor_cand_idx  candidate index chosen for the anchor peak.
+
+    Candidates with a NaN predicted CCS are excluded. Returns ([], nan, None)
+    when there is no valid prediction or no observed peak. Contrast
+    match_by_nearest_ccs, which assigns on the raw (unshifted) predictions and is
+    retained for provenance -- the two can disagree on the secondary assignment
+    exactly when the model has a large absolute-CCS bias."""
+    pred = np.asarray(predicted_ccs, dtype=float)
+    obs = np.asarray(observed_peaks, dtype=float)
+    valid = np.where(~np.isnan(pred))[0]
+    if valid.size == 0 or obs.size == 0:
+        return [], float("nan"), None
+
+    # 1. anchor (observed peak 0) -> nearest valid prediction
+    anchor_cand_idx = int(valid[int(np.argmin(np.abs(pred[valid] - obs[0])))])
+    # 2. translation that pins the anchor prediction onto the anchor peak
+    offset = float(obs[0] - pred[anchor_cand_idx])
+    shifted = pred + offset
+    matches = [(anchor_cand_idx, 0)]
+    # 3. remaining candidates vs remaining peaks, on the shifted predictions
+    rem_cand = np.array([c for c in valid if c != anchor_cand_idx], dtype=int)
+    rem_peak = np.arange(1, obs.size)
+    if rem_cand.size and rem_peak.size:
+        cost = np.abs(shifted[rem_cand][:, None] - obs[rem_peak][None, :])
+        rows, cols = linear_sum_assignment(cost)
+        matches += [(int(rem_cand[r]), int(rem_peak[c])) for r, c in zip(rows, cols)]
+    return matches, offset, anchor_cand_idx
+
+
 def match_candidates_to_peaks(
     candidates_pol: pd.DataFrame, peak_table: pd.DataFrame, charge_state: int
 ) -> tuple[list[dict], dict[str, int]]:
@@ -420,22 +468,34 @@ def build_clean_peak_table(
     band = multi[
         (multi["ratio"] <= DIMER_THRESH) & (multi["gap"] >= band_low) & (multi["gap"] <= band_high)
     ]
-    sec_by_mol = band.groupby("inchikey")["sp_ccs"].apply(list).to_dict()
+    # Carry each secondary's intensity_rank (from the source ccs_species order)
+    # alongside its CCS, so the matched output can record how intense each
+    # observed peak was relative to the base peak.
+    sec_by_mol = {
+        ik: list(zip(g["sp_ccs"].tolist(), g["intensity_rank"].tolist()))
+        for ik, g in band.groupby("inchikey")
+    }
 
     rows = []
     for inchikey, prim in primary_by_mol.items():
-        secs = sorted(sec_by_mol.get(inchikey, []))
-        clusters: list[list[float]] = []
-        for v in secs:
-            if clusters and abs(v - clusters[-1][-1]) / v <= PEAK_CLUSTER_TOL:
-                clusters[-1].append(v)
+        # Sort by CCS value only to make near-duplicate clustering well-defined;
+        # this is NOT the peak order used downstream (the anchor is the primary,
+        # peak_values[0]). Each cluster keeps the strongest (lowest) rank of its
+        # members as its representative intensity_rank.
+        secs = sorted(sec_by_mol.get(inchikey, []), key=lambda t: t[0])
+        clusters: list[list[tuple[float, int]]] = []
+        for v, rk in secs:
+            if clusters and abs(v - clusters[-1][-1][0]) / v <= PEAK_CLUSTER_TOL:
+                clusters[-1].append((v, rk))
             else:
-                clusters.append([v])
-        sec_vals = [float(np.median(c)) for c in clusters]
+                clusters.append([(v, rk)])
+        sec_vals = [float(np.median([t[0] for t in c])) for c in clusters]
+        sec_ranks = [int(min(t[1] for t in c)) for c in clusters]
         rows.append(
             {
                 "inchikey": inchikey,
-                "peak_values": [float(prim)] + sec_vals,  # primary first
+                "peak_values": [float(prim)] + sec_vals,  # primary first (anchor)
+                "peak_ranks": [0] + sec_ranks,  # intensity rank; 0 = base peak
                 "n_secondary": len(sec_vals),
             }
         )
@@ -451,13 +511,21 @@ def build_model2_pairs_ccs(
     band_low: float = CONFORMER_BAND_LOW,
     band_high: float = CONFORMER_BAND_HIGH,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Nearest-CCS Model 2 pairing (Step 4). Each observed peak is assigned to
-    the candidate whose QM-predicted CCS is closest to it (match_by_nearest_ccs),
-    NOT by any energy/pKa ranking. Drops single-site molecules and molecules
-    with no in-band secondary peak. pka_mean and a within-molecule relative-PA
-    descriptor (rel_pa_kcal, from dft_energy_hartree when present) are carried as
-    descriptor columns only. `ccs_residual` (|predicted - observed|) is retained
-    as a per-pair match-quality flag."""
+    """Anchored-CCS Model 2 pairing (Step 4). Each molecule's most intense (base)
+    peak anchors a per-molecule CCS offset (match_by_anchored_ccs): the anchor
+    peak is pinned to its nearest predicted candidate, that offset is applied to
+    all predictions to remove the model's absolute-CCS bias, and the remaining
+    peaks are then assigned to the remaining candidates by nearest *shifted*
+    prediction. Assignment is NOT by any energy/pKa ranking. Drops single-site
+    molecules and molecules with no in-band secondary peak. pka_mean and a
+    within-molecule relative-PA descriptor (rel_pa_kcal, from dft_energy_hartree
+    when present) are carried as descriptor columns only.
+
+    Provenance: the non-shifted nearest-CCS assignment (match_by_nearest_ccs) is
+    computed alongside and recorded per peak -- `raw_match_candidate_smiles` and
+    `assignment_changed` flag exactly where anchoring reassigned a secondary. Both
+    the shifted and raw residuals are kept (`ccs_residual` = |shifted - obs|,
+    `ccs_residual_raw` = |raw - obs|) so the absolute-bias removal is auditable."""
     cand = candidates_df[
         (candidates_df["charge_state"] == charge_state) & candidates_df["candidate_smiles"].notna()
     ].copy()
@@ -465,14 +533,14 @@ def build_model2_pairs_ccs(
     pred_cols = merge_cols + [c for c in predicted_ccs_df.columns if c not in cand.columns]
     cand = cand.merge(predicted_ccs_df[pred_cols], on=merge_cols, how="left")
 
-    peaks_by_mol = {
-        r.inchikey: r.peak_values
-        for r in build_clean_peak_table(spectra_df, charge_state, band_low, band_high).itertuples(index=False)
-    }
+    clean = build_clean_peak_table(spectra_df, charge_state, band_low, band_high)
+    peaks_by_mol = {r.inchikey: r.peak_values for r in clean.itertuples(index=False)}
+    ranks_by_mol = {r.inchikey: r.peak_ranks for r in clean.itertuples(index=False)}
 
     stats = {
-        "pairs": 0, "molecules_matched": 0, "dropped_single_site": 0,
-        "dropped_no_in_band_secondary": 0, "dropped_no_prediction": 0,
+        "pairs": 0, "molecules_matched": 0, "molecules_assignment_changed": 0,
+        "dropped_single_site": 0, "dropped_no_in_band_secondary": 0,
+        "dropped_no_prediction": 0,
     }
     rows: list[dict] = []
     for inchikey, group in cand.groupby("inchikey"):
@@ -485,18 +553,30 @@ def build_model2_pairs_ccs(
             stats["dropped_no_in_band_secondary"] += 1
             continue
         pred = group[ccs_column].tolist()
-        if all(pd.isna(p) for p in pred):
+        matches, offset, _ = match_by_anchored_ccs(pred, peak_values)
+        if not matches:
             stats["dropped_no_prediction"] += 1
             continue
+        # Non-shifted nearest-CCS assignment, kept purely for provenance.
+        raw_cand_by_peak = {p: c for c, p in match_by_nearest_ccs(pred, peak_values)}
+        peak_ranks = ranks_by_mol.get(inchikey, [0] * len(peak_values))
         rel_pa = (
             relative_pa_kcal(group["dft_energy_hartree"])
             if "dft_energy_hartree" in group.columns else [float("nan")] * len(group)
         )
         stats["molecules_matched"] += 1
-        for cand_idx, peak_idx in match_by_nearest_ccs(pred, peak_values):
+        molecule_changed = False
+        for cand_idx, peak_idx in matches:
             c = group.iloc[cand_idx]
             obs = peak_values[peak_idx]
-            pred_ccs = c[ccs_column]
+            raw_pred = c[ccs_column]
+            shifted_pred = (raw_pred + offset) if pd.notna(raw_pred) else float("nan")
+            raw_cand_idx = raw_cand_by_peak.get(peak_idx)
+            raw_smiles = (
+                group.iloc[raw_cand_idx]["candidate_smiles"] if raw_cand_idx is not None else None
+            )
+            changed = raw_smiles is not None and raw_smiles != c["candidate_smiles"]
+            molecule_changed = molecule_changed or changed
             rows.append(
                 {
                     "inchikey": inchikey,
@@ -504,10 +584,17 @@ def build_model2_pairs_ccs(
                     "candidate_smiles": c["candidate_smiles"],
                     "charged_atom_idx": c["charged_atom_idx"],
                     "observed_ccs": obs,
-                    "predicted_ccs": pred_ccs,
-                    "ccs_residual": abs(pred_ccs - obs) if pd.notna(pred_ccs) else float("nan"),
+                    "predicted_ccs": raw_pred,
+                    "predicted_ccs_shifted": shifted_pred,
+                    "anchor_offset": offset,
+                    "is_anchor": peak_idx == 0,
+                    "ccs_residual": abs(shifted_pred - obs) if pd.notna(shifted_pred) else float("nan"),
+                    "ccs_residual_raw": abs(raw_pred - obs) if pd.notna(raw_pred) else float("nan"),
                     "peak_role": "primary" if peak_idx == 0 else "secondary",
-                    "match_confidence": "ccs_nearest",
+                    "peak_intensity_rank": int(peak_ranks[peak_idx]) if peak_idx < len(peak_ranks) else -1,
+                    "match_confidence": "ccs_anchored",
+                    "raw_match_candidate_smiles": raw_smiles,
+                    "assignment_changed": changed,
                     "pka_mean": c.get("pka_mean"),
                     "rel_pa_kcal": rel_pa[cand_idx],
                     "dft_energy_hartree": c.get("dft_energy_hartree"),
@@ -515,9 +602,11 @@ def build_model2_pairs_ccs(
                 }
             )
             stats["pairs"] += 1
+        if molecule_changed:
+            stats["molecules_assignment_changed"] += 1
 
     result = pd.DataFrame(rows)
-    logger.info("Model 2 nearest-CCS pairs (charge=%+d): %d pairs -- %s", charge_state, len(result), stats)
+    logger.info("Model 2 anchored-CCS pairs (charge=%+d): %d pairs -- %s", charge_state, len(result), stats)
     return result, stats
 
 

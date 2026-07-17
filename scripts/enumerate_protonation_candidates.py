@@ -217,9 +217,16 @@ def _load_spectra_csv(input_path: Path, limit_molecules: Optional[int]) -> pd.Da
 
 
 def parse_ccs_species(s: Any) -> list[float]:
+    """CCS values from `ccs_species`, in SOURCE order. That order is ion-mobility
+    peak intensity rank (most intense first; the first entry matches the reported
+    `ccs`/primary value), NOT CCS magnitude -- confirmed directly against the
+    data. Do NOT sort here: build_secondary_species_table derives an
+    intensity_rank from this order, and sorting destroyed it in an earlier
+    version. Every current consumer (ratio-band / dimer classification) is
+    order-invariant, so preserving order is strictly safe."""
     if pd.isna(s) or not str(s).strip():
         return []
-    return sorted(float(x) for x in str(s).split(",") if x.strip())
+    return [float(x) for x in str(s).split(",") if x.strip()]
 
 
 def build_secondary_species_table(df: pd.DataFrame) -> pd.DataFrame:
@@ -232,10 +239,18 @@ def build_secondary_species_table(df: pd.DataFrame) -> pd.DataFrame:
         df[df["n_species"] >= 2][
             ["title", "adduct", "ccs_f", "ccs_species_list", "inchikey", "pepmass_f"]
         ]
+        .reset_index(drop=True)  # fresh unique index so the cumcount below is per-spectrum
         .explode("ccs_species_list")
         .rename(columns={"ccs_species_list": "sp_ccs"})
         .assign(sp_ccs=lambda x: pd.to_numeric(x["sp_ccs"], errors="coerce"))
     )
+    # Position within the source ccs_species list = IM-peak intensity rank
+    # (0 = base / most intense). explode preserves list order, and the reset
+    # above gives each source spectrum a unique index, so a per-index cumcount
+    # recovers the rank. Computed BEFORE the value filter below, which drops the
+    # base self-row (rank 0, sp_ccs == ccs_f) and any bad values -- so surviving
+    # secondaries carry their true rank (>= 1) from the original ordering.
+    multi["intensity_rank"] = multi.groupby(level=0).cumcount()
     multi = multi[
         (multi["sp_ccs"] != multi["ccs_f"])
         & multi["ccs_f"].notna()
