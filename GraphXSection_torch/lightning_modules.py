@@ -37,6 +37,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from typing import Dict, Any, Optional
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from scipy.optimize import linear_sum_assignment
 from GraphXSection_torch.models.Pyggy import Pyggy
 from GraphXSection_torch.models.AttentiveFP import AttentiveFPWrapper
 from GraphXSection_torch.models.Sigma import SigmaModel
@@ -528,3 +529,197 @@ class GraphXSectionLightningModule(pl.LightningModule):
             if optimizer_name == "sgd":
                 log.info("SGD momentum=%s", self.config["model"].get("momentum", 0.9))
             return optimizer
+
+
+# ---------------------------------------------------------------------------
+# Anchored set loss (protomer-aware training objective)
+# ---------------------------------------------------------------------------
+
+
+def anchored_set_loss(
+    preds: torch.Tensor,
+    mol_index: torch.Tensor,
+    dominant_index: torch.Tensor,
+    peaks: list[torch.Tensor],
+    loss_fn,
+    gap_lambda: float = 1.0,
+):
+    """Anchored set loss over a `collate_protomer` batch.
+
+    Two terms, computed per molecule and pooled over the batch:
+
+    - Anchor term: the dominant candidate's predicted CCS is regressed to the
+      base (most intense) observed peak. Applies to every molecule, so
+      single-peak molecules reduce to plain base-CCS regression.
+    - Gap term (molecules with >=2 observed peaks only): the remaining observed
+      peaks are matched permutation-invariantly to the remaining candidates by a
+      Hungarian assignment on the absolute gap error |pred_gap - obs_gap|, and
+      the loss regresses each matched predicted gap (pred_cand - pred_dominant)
+      to the observed gap (obs_peak - obs_base). This teaches the gap magnitude
+      without asserting a specific (unreliable) site-to-peak identity.
+
+    Parameters
+    ----------
+    preds : Tensor [total_candidates] or [total_candidates, 1]
+        One predicted CCS per forwarded candidate graph (flat over the batch).
+    mol_index : LongTensor [total_candidates]
+        Segment id mapping each candidate graph to its molecule.
+    dominant_index : LongTensor [num_molecules]
+        Global index (into `preds`) of each molecule's dominant candidate.
+    peaks : list[Tensor]
+        Ragged observed peak set per molecule, base peak first.
+    loss_fn : callable
+        Elementwise-reducible regression loss (e.g. SmoothL1Loss / L1Loss).
+    gap_lambda : float
+        Weight on the gap term relative to the anchor term.
+
+    Returns
+    -------
+    dict with keys: loss, anchor_loss, anchor_mae, gap_loss, gap_mae, n_gap_pairs.
+    """
+    preds = preds.view(-1)
+    device = preds.device
+    num_molecules = len(peaks)
+
+    # --- anchor term (vectorised over all molecules) ---
+    anchor_pred = preds[dominant_index]
+    anchor_obs = torch.stack([p[0] for p in peaks]).to(device)
+    anchor_loss = loss_fn(anchor_pred, anchor_obs)
+    # base-CCS MAE in absolute units (interpretable "how good is CCS")
+    anchor_mae = (anchor_pred - anchor_obs).abs().mean().detach()
+
+    # --- gap term (loop over multi-peak molecules only) ---
+    pred_gap_terms: list[torch.Tensor] = []
+    obs_gap_terms: list[torch.Tensor] = []
+    for m in range(num_molecules):
+        obs = peaks[m].to(device)
+        if obs.numel() < 2:
+            continue
+        cand_idx = (mol_index == m).nonzero(as_tuple=False).view(-1)
+        dom = int(dominant_index[m].item())
+        rem_cand = cand_idx[cand_idx != dom]
+        if rem_cand.numel() == 0:
+            continue
+
+        pred_dom = preds[dom]
+        pred_gaps = preds[rem_cand] - pred_dom            # [n_rem_cand]
+        obs_gaps = obs[1:] - obs[0]                        # [n_rem_obs]
+
+        # Hungarian match on the detached absolute gap error.
+        cost = (obs_gaps[:, None] - pred_gaps[None, :]).abs().detach().cpu().numpy()
+        row_ind, col_ind = linear_sum_assignment(cost)
+        pred_gap_terms.append(pred_gaps[col_ind])
+        obs_gap_terms.append(obs_gaps[row_ind])
+
+    if pred_gap_terms:
+        pred_gap_cat = torch.cat(pred_gap_terms)
+        obs_gap_cat = torch.cat(obs_gap_terms)
+        gap_loss = loss_fn(pred_gap_cat, obs_gap_cat)
+        gap_mae = (pred_gap_cat - obs_gap_cat).abs().mean().detach()
+        n_gap_pairs = pred_gap_cat.numel()
+    else:
+        gap_loss = torch.zeros((), device=device)
+        gap_mae = torch.zeros((), device=device)
+        n_gap_pairs = 0
+
+    total = anchor_loss + gap_lambda * gap_loss
+    return {
+        "loss": total,
+        "anchor_loss": anchor_loss.detach(),
+        "anchor_mae": anchor_mae,
+        "gap_loss": gap_loss.detach(),
+        "gap_mae": gap_mae,
+        "n_gap_pairs": n_gap_pairs,
+    }
+
+
+class ProtomerLightningModule(GraphXSectionLightningModule):
+    """Lightning module for protomer-aware training with the anchored set loss.
+
+    Batches follow `collate_protomer` (keys: graph, global_feats, mol_index,
+    dominant_index, peaks, num_molecules). The backbone model is unchanged: it
+    produces one scalar CCS per candidate graph. Only the loss and the
+    batch grouping differ from the base module, so the matched baseline keeps
+    using `GraphXSectionLightningModule` with plain regression.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        model_cfg = dict(self.config.get("model", {}))
+        self.gap_lambda = float(
+            model_cfg.get("gap_lambda", self.config.get("gap_lambda", 1.0))
+        )
+        log.info("ProtomerLightningModule gap_lambda=%s", self.gap_lambda)
+        self.best_val_base_mae = float("inf")
+        self.best_val_gap_mae = float("inf")
+
+    def _shared_step(self, batch, stage: str):
+        preds = self.model(batch)
+        out = anchored_set_loss(
+            preds,
+            batch["mol_index"],
+            batch["dominant_index"],
+            batch["peaks"],
+            self.loss_fn,
+            gap_lambda=self.gap_lambda,
+        )
+        bs = batch["num_molecules"]
+        # base_mae (absolute CCS error on the base peak) and gap_mae are the two
+        # interpretable metrics; show both live in the progress bar.
+        self.log(f"{stage}_loss", out["loss"], on_step=False, on_epoch=True,
+                 prog_bar=True, batch_size=bs)
+        self.log(f"{stage}_base_mae", out["anchor_mae"], on_step=False,
+                 on_epoch=True, prog_bar=True, batch_size=bs)
+        self.log(f"{stage}_gap_mae", out["gap_mae"], on_step=False,
+                 on_epoch=True, prog_bar=True, batch_size=bs)
+        self.log(f"{stage}_anchor_loss", out["anchor_loss"], on_step=False,
+                 on_epoch=True, prog_bar=False, batch_size=bs)
+        self.log(f"{stage}_gap_loss", out["gap_loss"], on_step=False,
+                 on_epoch=True, prog_bar=False, batch_size=bs)
+        return out
+
+    def training_step(self, batch, batch_idx):
+        return {"loss": self._shared_step(batch, "train")["loss"]}
+
+    def validation_step(self, batch, batch_idx):
+        return {"val_loss": self._shared_step(batch, "val")["loss"]}
+
+    def test_step(self, batch, batch_idx):
+        out = self._shared_step(batch, "test")
+        return {"test_loss": out["loss"]}
+
+    def on_validation_epoch_end(self):
+        """Print a clean per-epoch summary to the terminal and track best MAEs."""
+        cm = self.trainer.callback_metrics
+
+        def _get(k):
+            v = cm.get(k)
+            return float(v.item()) if v is not None else None
+
+        tr_base, tr_gap = _get("train_base_mae"), _get("train_gap_mae")
+        va_loss = _get("val_loss")
+        va_base, va_gap = _get("val_base_mae"), _get("val_gap_mae")
+
+        if va_base is not None:
+            self.best_val_base_mae = min(self.best_val_base_mae, va_base)
+        if va_gap is not None:
+            self.best_val_gap_mae = min(self.best_val_gap_mae, va_gap)
+
+        def _f(x):
+            return f"{x:.3f}" if x is not None else "   -  "
+
+        log.info(
+            "epoch %3d | val_loss %s | base_mae train %s val %s (best %s) "
+            "| gap_mae train %s val %s (best %s)",
+            self.current_epoch, _f(va_loss),
+            _f(tr_base), _f(va_base), _f(self.best_val_base_mae),
+            _f(tr_gap), _f(va_gap), _f(self.best_val_gap_mae),
+        )
+
+        # mirror the best metrics into the logger (e.g. W&B) for tracking. Log
+        # via self.log (no explicit step) so it rides Lightning's own step and
+        # does not trip W&B's monotonic-step warning.
+        if va_base is not None:
+            self.log("best_val_base_mae", self.best_val_base_mae, prog_bar=False)
+        if va_gap is not None:
+            self.log("best_val_gap_mae", self.best_val_gap_mae, prog_bar=False)

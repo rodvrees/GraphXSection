@@ -67,6 +67,11 @@ class SigmaModel(nn.Module):
         self.dropout = m.get("dropout", 0.0)
         self.final_activation = m.get("final_activation", "relu")
 
+        # Protomer-aware charged-atom readout: concatenate the protonated atom's
+        # node embedding to the pooled graph embedding before the dense head, so
+        # the head is explicitly charge-site aware. Optional and ablatable.
+        self.charged_atom_readout = bool(m.get("charged_atom_readout", False))
+
         # Log all extracted hyperparameters for verification
         import logging
 
@@ -201,9 +206,12 @@ class SigmaModel(nn.Module):
 
         dense_layers = []
         # Input: pooled graph embedding + encoded global features
+        # (+ charged-atom node embedding when charged_atom_readout is enabled).
         input_dim = self.ecc_channels + (
             self.global_emb_dim if self.global_raw_dim > 0 else 0
         )
+        if self.charged_atom_readout:
+            input_dim += self.ecc_channels
 
         for i in range(self.num_dense_layers):
             dense_layers.extend(
@@ -314,6 +322,18 @@ class SigmaModel(nn.Module):
 
         # Global pooling
         h_pooled = self.pool(h, batch_idx)
+
+        # Charged-atom readout: append the protonated atom's node embedding.
+        # `charged_atom_index` holds the global node index per graph (or -1 for
+        # neutral graphs, whose contribution is a zero vector).
+        if self.charged_atom_readout:
+            charged_idx = batch.get("charged_atom_index", None)
+            charged_emb = h.new_zeros((h_pooled.size(0), self.ecc_channels))
+            if charged_idx is not None:
+                valid = charged_idx >= 0
+                if valid.any():
+                    charged_emb[valid] = h[charged_idx[valid]]
+            h_pooled = torch.cat([h_pooled, charged_emb], dim=-1)
 
         # Encode and concatenate global features (adduct descriptors) if available
         if global_feats is not None and self.global_encoder is not None:

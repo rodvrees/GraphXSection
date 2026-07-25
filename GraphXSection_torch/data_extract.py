@@ -423,9 +423,22 @@ class MoleculeIon:
         edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
         edge_attr = torch.tensor(np.array(edge_features_list), dtype=torch.long)
 
+        # Local index of the charged (protonated/deprotonated) atom, detected by
+        # nonzero formal charge, for the optional charged-atom readout. -1 when
+        # the graph is neutral (base-only adducts, matched baseline). Read in the
+        # same atom order used above, so it aligns with the node rows regardless
+        # of enumeration order.
+        charged_local = -1
+        for atom_idx in range(mol.GetNumAtoms()):
+            if mol.GetAtomWithIdx(atom_idx).GetFormalCharge() != 0:
+                charged_local = atom_idx
+                break
+
         # Return only the molecular graph; global/adduct features are handled by the dataset
         # to ensure consistency with the fitted AdductEncoder.
-        return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+        data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+        data.charged_atom_local = charged_local
+        return data
 
 
 class GraphXSectionDataset(Dataset):

@@ -111,6 +111,25 @@ from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolDescriptors
 
 
+def _build_valid_elements() -> frozenset:
+    """Set of real element symbols, so we can reject adduct-shorthand tokens
+    (FA, Hac, Me, MeOH, ...) BEFORE calling RDKit's GetAtomicNumber. That call
+    prints a C++ post-condition banner to stderr on an unknown symbol even when
+    the Python exception is caught, which floods training logs; pre-checking
+    membership avoids the call entirely."""
+    pt = Chem.GetPeriodicTable()
+    syms = set()
+    for z in range(1, 119):
+        try:
+            syms.add(pt.GetElementSymbol(z))
+        except Exception:
+            pass
+    return frozenset(syms)
+
+
+_VALID_ELEMENTS = _build_valid_elements()
+
+
 @dataclass(frozen=True)
 class ParsedAdduct:
     """Structured parse output for an adduct string."""
@@ -145,6 +164,24 @@ class AdductFeatureExtractor:
 
     # Formula parser: element symbol + optional count (e.g., CH3COO -> C2 H3 O2)
     _FORMULA_RE = re.compile(r"([A-Z][a-z]?)(\d*)")
+
+    # Common MS adduct / solvent shorthands that are NOT chemical formulas.
+    # Normalise them to real formulas so _parse_formula yields correct elements
+    # (and no spurious "unknown element" warnings) for adducts like [M+FA-H]-,
+    # [M+Hac-H]-, [M+MeOH+Na]+.
+    _TOKEN_ALIASES = {
+        "FA": "CH2O2",     # formic acid
+        "Hac": "C2H4O2",   # acetic acid
+        "HAc": "C2H4O2",
+        "AcOH": "C2H4O2",
+        "MeOH": "CH4O",    # methanol
+        "EtOH": "C2H6O",   # ethanol
+        "IPA": "C3H8O",    # isopropanol
+        "ACN": "C2H3N",    # acetonitrile
+        "MeCN": "C2H3N",
+        "DMSO": "C2H6OS",  # dimethyl sulfoxide
+        "TFA": "C2HF3O2",  # trifluoroacetic acid
+    }
 
     # ---------------
 
@@ -297,6 +334,7 @@ class AdductFeatureExtractor:
     # -------------------------
     def _parse_formula(self, token: str) -> Dict[str, int]:
         """Parse a token as a chemical formula into element counts."""
+        token = self._TOKEN_ALIASES.get(token, token)
         matches = self._FORMULA_RE.findall(token)
         if not matches:
             return {}
@@ -314,6 +352,8 @@ class AdductFeatureExtractor:
         Element mass provider using RDKit periodic table atomic weights (average masses).
         This is a proxy suitable for conditioning features.
         """
+        if element not in _VALID_ELEMENTS:
+            return None
         try:
             z = self._ptable.GetAtomicNumber(element)
             if z <= 0:
@@ -339,10 +379,16 @@ class AdductFeatureExtractor:
         for el, n in token_comp.items():
             em = self._element_mass(el)
             if em is None:
-                warnings.warn(
-                    f"Unknown element {el!r} in token {token!r}; treating that element mass as 0.",
-                    UserWarning,
-                )
+                # Warn at most once per (token, element) per process so an
+                # unrecognised shorthand cannot flood the logs across DataLoader
+                # workers. Known shorthands are handled by _TOKEN_ALIASES upstream.
+                warn_key = f"{token}:{el}"
+                if self._warn_on_unparsed_tokens and warn_key not in self._warned_tokens:
+                    self._warned_tokens.add(warn_key)
+                    warnings.warn(
+                        f"Unknown element {el!r} in token {token!r}; treating that element mass as 0.",
+                        UserWarning,
+                    )
                 continue
             m += em * float(n)
         return float(m)
@@ -470,7 +516,16 @@ class AdductFeatureExtractor:
                 mass_loss += cnt_i * tok_mass
 
             for el, n_el in tok_comp.items():
-                z = self._ptable.GetAtomicNumber(el)
+                # Skip non-element tokens (adduct shorthands like 'FA', 'Hac',
+                # 'MeOH', 'Me' that _parse_formula mis-splits). Pre-checking the
+                # valid-element set avoids GetAtomicNumber's C++ post-condition
+                # banner on unknown symbols, which otherwise floods the logs.
+                if el not in _VALID_ELEMENTS:
+                    continue
+                try:
+                    z = self._ptable.GetAtomicNumber(el)
+                except Exception:
+                    z = -1
                 if z <= 0:
                     continue
 
