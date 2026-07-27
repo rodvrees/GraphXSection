@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 from pathlib import Path
 
 import numpy as np
@@ -52,6 +53,12 @@ DIMER_THRESH = 1.25            # ratio sp_ccs/ccs above which a secondary peak i
 BAND_LOW, BAND_HIGH = 0.02, 0.09   # |ratio-1| conformer/protomer band for kept secondaries
 PROTOMER_ADDUCTS = {"[M+H]+": 1, "[M-H]-": -1}   # only these get protomer enumeration
 VALID_FRAC, TEST_FRAC = 0.1, 0.1
+# Drop multimer adducts ([2M+...], [3M+...]): the featurized monomer graph does
+# not correspond to the measured multimer ion (dimer CCS ~= 2x monomer), so these
+# rows are structure/label mismatches that hurt base-CCS regression. In-source
+# fragment adducts ([M-H2O+H]+, [M-NH3+H]+, ...) start with a single "M" and are kept.
+DROP_MULTIMERS = True
+_MULTIMER_RE = re.compile(r"^\[\d+M")
 
 
 # --------------------------------------------------------------------------- #
@@ -165,8 +172,12 @@ def build_enveda_records(dedup: pd.DataFrame, cands: pd.DataFrame) -> pd.DataFra
 
     records = []
     n_no_cands = 0
+    n_multimer = 0
     for row in dedup.itertuples(index=False):
         adduct = row.adduct
+        if DROP_MULTIMERS and _MULTIMER_RE.match(str(adduct)):
+            n_multimer += 1
+            continue
         charge_state = PROTOMER_ADDUCTS.get(adduct)
         peaks = parse_peaks(row.ccs_species, row.ccs)
         if len(peaks) == 0:
@@ -206,7 +217,8 @@ def build_enveda_records(dedup: pd.DataFrame, cands: pd.DataFrame) -> pd.DataFra
         rec["has_gap"] = rec["n_obs_peaks"] >= 2 and rec["n_candidates"] >= 2
         records.append(rec)
 
-    logger.info("Enveda records: %d (%d H+/- rows had no enumerated candidates)", len(records), n_no_cands)
+    logger.info("Enveda records: %d (%d H+/- rows had no enumerated candidates, %d multimer rows dropped)",
+                len(records), n_no_cands, n_multimer)
     return pd.DataFrame(records)
 
 

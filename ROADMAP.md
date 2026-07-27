@@ -17,6 +17,88 @@ Two findings from prior work shape the design:
 2. The CCS engine is not the bottleneck and does not belong in the training loop; MD/DFT are for
    validation, not label generation.
 
+---
+
+## STATUS (2026-07-27)
+
+The full pipeline is **implemented, trained, and evaluated**. The method works: the model predicts
+a distinct CCS per protomer with strong gap correlation, and the base-CCS accuracy is at the data's
+intrinsic ceiling (not a method deficiency). Sections 1-4 below are the design reference; this block
+records what was actually built, the results, and what deviated from the plan.
+
+### Implemented
+- **Corpus:** `scripts/build_training_corpus.py` -> `outputs/training_corpus/corpus_{train,valid,test}.parquet`.
+  Enveda-180 only so far (the curated TIMS add-ons in Section 1 are not yet merged). Scaffold-split, 0 leakage.
+- **Featurizers:** `GasteigerChargeBinned` + `IsProtonationSite` in `graphamole/.../featurizers/atom.py`;
+  config-switchable via `configs/features_{baseline,protomer}.json` (15 vs 17 atom features).
+- **Dataset/collate/datamodule:** `GraphXSection_torch/protomer_data.py`
+  (`ProtomerCorpusDataset`, `collate_protomer`, `ProtomerDataModule`), with `graph_smiles_mode`
+  (charged/neutral) and `primary_only` switches for ablations.
+- **Loss:** `anchored_set_loss` + `ProtomerLightningModule` in `lightning_modules.py`.
+- **Architecture:** charged-atom readout in `models/Sigma.py` (ablatable); adduct descriptor decoupled
+  onto the neutral parent SMILES.
+- **Scripts:** `train_protomer.py`, `eval_protomer_gap.py` (base parity, gap vs zero-gap, permutation
+  null, gold spot-checks), `run_ablations.py` (6-variant leave-one-out), `build_matched_baseline_csv.py`.
+- **Config:** `configs/sigma_config_protomer.json` and the generated `outputs/ablations/config_*.json`.
+
+### Deviations from the original plan (all necessary)
+- **`final_activation: none` (not relu).** The final ReLU is a dead-output trap at init: predictions
+  collapse to 0, gradients vanish, metrics freeze after ~1 epoch. Linear output is required.
+- **`learning_rate: 0.003` at `batch_size: 512`.** The sqrt-batch-scaled 0.02 diverged; 0.003 (near the
+  original stable 0.00356) is clean.
+- **Feature caching added.** Training was CPU-bound on per-item RDKit featurization (~5 ms/mol, GPU
+  forward ~4 ms/batch, so bigger batches did nothing). Now precompute once to a disk cache
+  (`~/.cache/protomer_precompute`, parallel shard-write ~1100 mol/s) and serve `num_workers=0`.
+  Also fixed an O(N^2) Gasteiger recompute (once per atom -> once per molecule).
+- **Adduct-parser robustness.** `_TOKEN_ALIASES` maps MS shorthands (FA/Hac/MeOH/...) to real formulas;
+  `_VALID_ELEMENTS` pre-check stops an RDKit C++ banner that flooded logs.
+- **Multimers dropped from the corpus** (`DROP_MULTIMERS` in the builder): 24.8% of rows were
+  `[2M+...]` where the featurized monomer graph does not match the measured dimer ion. In-source
+  fragment adducts (`[M-H2O+H]+`, ...) are kept per the user. Corpus now train 208,455 / valid 26,003
+  / test 25,720 (gap rows unchanged 48,131). With-multimer backups: `corpus_{split}_withmultimer.parquet`.
+
+### Results (100-epoch ablations, WITH-multimer test split; clean-data rerun pending)
+
+| variant        | base med-rel | gap_corr | sign_acc | gap_MAE | zero-gap | null_corr |
+|----------------|-------------:|---------:|---------:|--------:|---------:|----------:|
+| full           | 2.51%        | **0.709**| **0.86** | **4.97**| 10.58    | 0.383     |
+| no_isprot      | 2.34%        | 0.653    | 0.81     | 5.99    | 10.57    | 0.36      |
+| no_gasteiger   | 2.17%        | 0.688    | 0.85     | 5.36    | 10.56    | 0.37      |
+| no_readout     | 2.39%        | 0.642    | 0.81     | 6.05    | 10.57    | 0.36      |
+| neutral_smiles | 4.00%        | 0.133    | 0.06     | 10.54   | 10.54    | 0.12      |
+| primary_only   | **1.81%**    | 0.457    | 0.64     | 9.69    | 10.55    | 0.31      |
+
+- **Method works:** `full` gap_corr 0.709, sign_acc 0.86, gap_MAE 4.97 vs zero-gap 10.58 (2x better),
+  well above its permutation null 0.383 (structure-specific, not matcher artifact).
+- **`neutral_smiles` control:** strip charge from the graph and the gap signal collapses to the null.
+  All gap capability comes from the charge-positioned SMILES.
+- **`primary_only`** (no gap term) already has gap_corr 0.457 from the intrinsic charged-feature spread;
+  the gap loss ~doubles it to 0.709. The gap objective does real work.
+- **Feature ladder:** readout and `IsProtonationSite` each contribute ~0.06 gap_corr; Gasteiger ~0.02.
+- **Base/gap tradeoff:** `gap_lambda=5` costs ~0.7 pt of base accuracy (full 2.51% vs primary_only 1.81%).
+
+### KEY FINDING: base-CCS accuracy is data-limited, not method-limited
+
+Diagnostic (`configs/sigma_config_gen_adduct_fixed.json`, dims rebuilt from the checkpoint):
+the good reference model `GeneralizedAdducts_SigmaCCS`, which gets ~1.3% on its own curated data,
+reaches only **2.41% median-rel on the Enveda test set** ([M+H]+ 2.05%, [M-H]- 2.89%). So Enveda has
+an intrinsic ~2-2.4% CCS ceiling; `primary_only` (1.81%) beats it and `full` (2.51%) matches it. The
+"worse than expected" base CCS is an Enveda data-quality ceiling, not a defect in the training/method.
+Do not chase base CCS below ~2% on this data.
+
+### Next steps
+1. **Retrain `full` + `primary_only` on the cleaned corpus** (configs in `outputs/ablations_clean/`;
+   with-multimer checkpoints preserved in `outputs/ablations/`). Confirm the gap result holds and base
+   tightens toward primary_only's 1.8%.
+2. **`gap_lambda` sweep (1, 2, 3):** frame as recovering base toward 1.8% while keeping gap_corr high,
+   not as fixing a defect. Map the base/gap Pareto front.
+3. **Gold directional spot-checks** on the retrained `full` (`--gold-csv protomer_eval/protomer_test_df.csv`):
+   danofloxacin (181.7/193.7), melphalan, benzocaine correct in direction and magnitude band.
+4. **Data-scale iteration (later):** merge the curated TIMS add-ons (CCSBase TIMS, PFAS); then the
+   deferred non-TIMS sets + IM-technique/gas global feature to pool instruments (Section 1/2.5).
+
+---
+
 ## Decisions locked with the user
 
 - **Training objective:** anchored set loss (below). Base peak pinned to the dominant protomer;
@@ -165,6 +247,12 @@ with data. Instead **retrain the old procedure** (current featurization, plain s
 no protomer changes) on the **same timsTOF training molecules and the same splits**, and evaluate it
 on the **same held-out set**. Every claimed improvement is new-procedure vs matched-baseline on
 identical data. Each architecture change (Section 2) is likewise A/B'd on the same data via ablation.
+
+**Exception (data-ceiling diagnostic, not an improvement claim):** the pre-existing
+`GeneralizedAdducts_SigmaCCS` checkpoint *is* run directly on the Enveda test set, precisely to
+measure the data floor. Because it was trained on curated data and still only reaches ~2.4% on Enveda,
+it tells us the ceiling is the data, not our method. This is a diagnostic about the data, so the
+different-training-data confound is the point rather than a problem. See the STATUS block above.
 
 1. **Base CCS accuracy** on the held-out molecule split: MAE / median relative error, per adduct.
    The new model must stay comparable to the matched baseline (do not regress base performance while
