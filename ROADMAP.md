@@ -21,10 +21,16 @@ Two findings from prior work shape the design:
 
 ## STATUS (2026-07-27)
 
-The full pipeline is **implemented, trained, and evaluated**. The method works: the model predicts
-a distinct CCS per protomer with strong gap correlation, and the base-CCS accuracy is at the data's
-intrinsic ceiling (not a method deficiency). Sections 1-4 below are the design reference; this block
-records what was actually built, the results, and what deviated from the plan.
+The full pipeline is **implemented, trained, and evaluated**. Base-CCS accuracy is at the Enveda data
+ceiling (not a method deficiency) -- now proven from BOTH directions: the good reference model also only
+reaches ~2.4% on Enveda, and the current approach reaches ~1.4% on curated data. **The protomer gap
+DIRECTION is NOT learned.** The headline Enveda gap_corr 0.73 is a matcher artifact: with a fixed,
+matcher-free assignment the correlation collapses to 0.05, the model predicts a near-constant positive
+gap, and the external gold directional check fails (1/3). See the GAP-DIRECTION ANALYSIS below. Net: base
+CCS works and is data-limited. **DECIDED path for the gap: assignment-labelled supervision -- fix the
+site->peak assignment by proton-affinity ranking (energy -> abundance -> intensity order), use the observed
+CCS as the label, compute NO CCS. See the CHOSEN DIRECTION section.** Sections 1-4 below are the design
+reference; this block records what was built, the results, and what deviated from the plan.
 
 ### Implemented
 - **Corpus:** `scripts/build_training_corpus.py` -> `outputs/training_corpus/corpus_{train,valid,test}.parquet`.
@@ -68,8 +74,11 @@ records what was actually built, the results, and what deviated from the plan.
 | neutral_smiles | 4.00%        | 0.133    | 0.06     | 10.54   | 10.54    | 0.12      |
 | primary_only   | **1.81%**    | 0.457    | 0.64     | 9.69    | 10.55    | 0.31      |
 
-- **Method works:** `full` gap_corr 0.709, sign_acc 0.86, gap_MAE 4.97 vs zero-gap 10.58 (2x better),
-  well above its permutation null 0.383 (structure-specific, not matcher artifact).
+- **`full` gap_corr 0.709, sign_acc 0.86, gap_MAE 4.97 vs zero-gap 10.58, above null 0.383.**
+  [SUPERSEDED] These are the matcher-based numbers; the GAP-DIRECTION ANALYSIS below shows they are
+  matcher inflation (fixed-assignment corr 0.05). "Beats the null" is real but small; it does NOT mean
+  the gap direction is learned. Read the ablation ORDERING (which feature helps) but not the absolute
+  gap_corr as a capability.
 - **`neutral_smiles` control:** strip charge from the graph and the gap signal collapses to the null.
   All gap capability comes from the charge-positioned SMILES.
 - **`primary_only`** (no gap term) already has gap_corr 0.457 from the intrinsic charged-feature spread;
@@ -77,24 +86,221 @@ records what was actually built, the results, and what deviated from the plan.
 - **Feature ladder:** readout and `IsProtonationSite` each contribute ~0.06 gap_corr; Gasteiger ~0.02.
 - **Base/gap tradeoff:** `gap_lambda=5` costs ~0.7 pt of base accuracy (full 2.51% vs primary_only 1.81%).
 
+### Clean-data `full` retrain (multimers removed; evaluated on the clean 25,720-mol test set)
+
+| metric | value | vs before |
+|--------|-------|-----------|
+| base med-rel (ALL) | **2.80%** | worse than old full 2.51% and reference 2.40% |
+| base med-rel [M+H]+ / [M-H]- | 2.55% / 3.31% | [M+H]+ ~0.5 pt above the reference's 2.02% |
+| Enveda gap_corr | **0.727** | held up (was 0.709) |
+| Enveda sign_acc / gap_MAE | 0.871 / 4.81 (null 0.389) | held up |
+| **gold directional (n=3)** | **1/3 correct** | benzocaine, danofloxacin WRONG sign; melphalan right but mag 1.51 vs obs 9.2 |
+
+Two things to read from this:
+1. **Base got worse, not better, after cleaning.** Removing 68k base-only multimer rows shrank the
+   base-regression signal while the gap molecules and `gap_lambda=5`/`oversample=5` stayed fixed, so
+   the gap term now dominates more and base pays for it. The fix is the `gap_lambda` sweep (Next-step
+   #3) and/or lowering `gap_oversample_factor`; `primary_only` on clean data is still expected ~1.8-2%.
+2. **The Enveda gap correlation does NOT transfer to the external gold set** -- because it is a matcher
+   artifact. See the gap-direction analysis below.
+
+### GAP-DIRECTION ANALYSIS (2026-07-27, `scripts/analyze_gap_direction.py`): the gap is NOT learned
+
+For the 1,350 clean 2-peak/2-candidate test molecules, the signed predicted gap (secondary - base)
+was scored two ways:
+
+| assignment scheme | n | sign_acc | corr | gap_MAE |
+|---|---|---|---|---|
+| MATCHER (Hungarian; the headline metric) | 1284 | 0.831 | **+0.456** | 5.88 |
+| FIXED (dominant heuristic = base; matcher-free) | 1350 | 0.708 | **+0.051** | 7.38 |
+
+(The full-eval headline 0.73 is even higher than 0.456 here because it includes >2-candidate molecules,
+where the matcher has more candidates to choose the error-minimising assignment from -- more freedom,
+more inflation.)
+
+**Conclusion: the gap direction is not learned; the correlation is manufactured by the matcher.**
+- With a fixed, matcher-free assignment the correlation is **0.05 (zero)**.
+- The model predicts a **near-constant positive gap** (pred_gap_mean ~+6 to +9 for every site-element
+  pair, regardless of the observed gap). Observed gaps are positive 76% of the time, so this
+  constant-positive rule scores sign_acc 0.708 -- *below* the trivial always-positive baseline (0.76).
+  It learned the MEAN gap direction, not per-molecule direction.
+- Root cause: the two protomers of a molecule are near-identical 2D charged graphs (they differ only
+  at the proton position, and CCS is ~blind to protonation site), so the input carries too little
+  signal to predict which protomer is larger. The anchored SET loss rewards matching the set of CCS
+  magnitudes, and a constant spread satisfies that without learning direction. This is the founding
+  concern (per-site assignment unreliable; matcher manufactures concordance), now proven at the model
+  level, and it explains the gold failure (1/3): with true assignments and no matcher, the
+  constant-positive rule fails whenever the real ordering differs.
+
+**Implication:** base CCS is solved (data-limited); protomer-gap DIRECTION is very likely NOT learnable
+from 2D charged-SMILES graphs with a set-matching objective. Advancing it needs either
+direction-aware supervision from a set with KNOWN site->peak assignments (QM-derived labels, see the
+protomer-QM-label pipeline, or the Waters 48-pair set with sites protonated) or a representation that
+actually distinguishes protomers (3D/conformer or physics features) -- which trades against the
+"no conformer generation at inference" constraint.
+
+### CHOSEN DIRECTION (2026-07-27): assignment-labelled supervision by proton-affinity ranking
+
+Decision: fix the site->peak assignment by ENERGY (proton affinity), not by CCS, and use the observed
+CCS directly as the label. Every prior attempt (MD-CCS, DFT-static CCS, the GNN) assigned peaks by
+COMPUTED CCS, and that matching is exactly what inflated the results (the MD pipeline's structure-specific
+signal was only +0.092 above the permutation null; ~63% was nearest-CCS matcher selection artifact). The
+key realisation: **we do NOT need to compute CCS at all.** The observed CCS is already in the data, so once
+a protomer is assigned to a peak by abundance, that peak's observed CCS is the protomer's label.
+
+Why energy/abundance is the right key: the observed peaks are intensity-ordered (`ccs_species`, base peak
+first) and peak intensity tracks protomer abundance. Abundance is governed by protonation energetics, so a
+proton-affinity ranking gives the assignment. This is orthogonal to CCS, so it breaks the matcher
+degeneracy that CCS-based matching cannot escape (many candidates near the observed gap -> selection
+artifact).
+
+Pipeline (no MOBCAL / MD / CCS prediction anywhere):
+1. **Purity gate: protomer vs conformer.** The 2-9% band is conformer-dominated (Enveda analysis:
+   tertiary-amide OR 1.27, biaryl dose-response, cross-adduct non-transfer). A conformer has no site to
+   rank, so restrict to a high-purity protomer subset first: cross-adduct non-transfer (Step 8), no
+   tertiary-amide / biaryl rotor, >=2 competitive basic sites.
+2. **Enumerate protomers** (Dimorphite / existing `enumerate_protonation_candidates.py`).
+3. **Rank protomer abundance by energetics** — `scripts/rank_protomer_energies.py` (BUILT + validated
+   2026-07-27, replaces `.archive/proton_affinity_calculator.py`). Ranks the enumerated microstates of
+   each molecule by relative gas-phase energy of the CHARGED species (the neutral cancels, so it is NOT
+   computed). Two-stage for efficiency over ~800k candidates: **Stage 1** PM3-opt every candidate (store
+   energy + optimized geometry); **Stage 2** r2SCAN-3c single point only for MOLECULES whose ranking is
+   uncertain (PM3 top-2 gap < 3 kcal), that carry a gap (`has_clean_secondary_ccs`), or are anions — and
+   for ALL candidates of a selected molecule (never mix PM3 and DFT within one ranking); **Stage 3** rank
+   by the homogeneous per-molecule energy, Boltzmann populations, + the protomer/conformer signals below.
+   Reuses `embed_and_optimize`/`mol_to_xyz_block` (`rank_candidates_pm3.py`); ORCA callers inlined to
+   avoid the isicle/MOBCAL chain. Resume/skip-existing built in. Runs on ALL molecules (not just gap
+   ones) so the dominant protomer that sets each molecule's base-CCS structure is validated everywhere.
+   - **Enumerate ALL competing sites; do NOT pre-filter by element.** The archived N>O>S first-tier-only
+     `identify_protonation_sites` would enumerate only N whenever any N exists, discarding the O protomer
+     that is actually observed (danofloxacin keto-O+ vs amine-N+; benzocaine carboxyl-O+ vs amine-N+).
+     We enumerate every N/O/S (+1) / Dimorphite acidic (-1) site (symmetry-collapsed) and let energy rank.
+   - **Negative mode ([M-H]-):** SOUND and symmetric (lowest-energy anion = most acidic = most abundant
+     deprotomer). r2SCAN-3c's basis has NO diffuse functions, so anions use a diffuse-augmented level
+     (`--dft-method-neg` default `r2SCAN def2-TZVPD D4 RIJCOSX def2/J`, confirmed to run + converge in the
+     ORCA build); PM3 anion energies are not trusted (anions always go to DFT). SCF non-convergence flagged.
+   - **Caveats (flagged, not fixed now):** electronic energy is a proxy for free energy (ZPE/entropy
+     ignored, usually small between similar protomers); gas-phase energy != observed abundance under
+     kinetic trapping, so keep Dimorphite `pka_mean` alongside energy and gate the assignment on
+     energy+pKa agreement + a resolvable gap; single conformer per microstate (K-conformer ensemble is a
+     later accuracy upgrade).
+   - **Protomer-vs-conformer discovery output** (per molecule, orthogonal to the Enveda rotor/cross-adduct
+     flags): `n_populated` (Boltzmann pop > threshold), `top2_energy_gap_kcal`, `cross_element_competition`,
+     `protomer_plausible` (>=2 populated protomers). A `has_clean_secondary_ccs` molecule that is NOT
+     protomer_plausible (one protomer dominates, large energy gap) has a secondary peak better explained as
+     a CONFORMER. Validated on the smoke test: a [M+H]+ case with a 21 kcal gap -> conformer-suspect; a
+     [M-H]- case with a 1.5 kcal gap -> protomer-plausible. Outputs `outputs/protomer_energies/ranked_{candidates,molecules}.parquet`.
+4. **Align abundance ranking to intensity-ordered peaks:** most abundant protomer -> base (most intense)
+   peak, next -> second peak. Confidence-gate on the proton-affinity gap: keep only molecules where the
+   PA difference is large enough to trust the order; drop near-ties.
+5. **Emit labels:** (protomer charged SMILES, observed CCS of its assigned peak). The observed CCS is the
+   label; nothing is computed.
+6. **VALIDATE the ranking on the Waters gold set BEFORE relabelling Enveda.** `data/Waters/other_ccs_measurements.xlsx`
+   (6,172 rows; `CCS Protomer 1/2` + proton-site labels + neutral SMILES). Protonate at the labelled
+   sites, run the PA ranking, and confirm it recovers the known site->CCS (danofloxacin keto-O+ 181.7 vs
+   amine-N+ 193.7, etc.). Only trust Enveda labels once this passes.
+
+Training and acceptance:
+- **Direction-aware loss** on the confident labelled subset (penalise the wrong sign of
+  pred[secondary] - pred[dominant] using the assigned direction), on top of the existing base-CCS anchor
+  term trained on all data. Retire the anchored-offset CCS matcher from the loss for these molecules.
+- **Acceptance metric = external gold directional accuracy** (expanded Waters set), NOT the matcher-based
+  Enveda gap_corr, which is not trustworthy.
+
+Retire for labelling: the MD-CCS (`predict_candidate_ccs_md.py`) and DFT-static
+(`predict_candidate_ccs_dft.py`) CCS pipelines, and CCS-based anchored-offset matching. Keep the DFT
+machinery only for the relative-energy / proton-affinity ranking.
+
+Honest caveats (unchanged): the labelled set will be modest and high-confidence, not large; and a 2D GNN
+may still fail to learn direction even from correct labels if the signal is inherently 3D. Decide whether
+the deliverable is a direction-aware GNN or the physics ranking itself as the protomer assigner, with the
+GNN as a base-CCS-only fast surrogate.
+
+First concrete step: build the Waters-gold PA-ranking validation (step 6) -- prove the assignment method
+recovers known site->CCS before any Enveda relabelling.
+
+#### Waters-gold validation, attempted 2026-07-27 (findings)
+
+Data reality: `other_ccs_measurements.xlsx` has only **7** fully-labelled protomer pairs (danofloxacin,
+fentanyl, despropionyl-fentanyl, melphalan, para/meta-benzocaine, aniline), NOT 48. The site labels are
+inconsistent free text ("N on chloroethyl side", "O carboxyl group", "N-22 (or N-19, less likely)"), and
+there is **no intensity/abundance column** (the two CCS are ordered by CCS, Protomer 1 < Protomer 2, 7/7).
+Consolidated table: `outputs/protomer_gold/waters_protomer_pairs.csv`.
+
+POSITIVE finding (the direction is real and chemically interpretable): the higher-CCS (extended) protomer
+is **N-protonated in 7/7**; the lower-CCS (compact) protomer is O-protonated (3), ring (1), or a
+different/less-basic N (3). Charge solvation / intramolecular H-bonding compacts O- and ring-protonated
+ions; N-ammonium is charge-localised and extends. This is a site-TYPE rule, which a 2D graph CAN encode,
+so the model's failure was not learning this rule (it predicted a constant gap), not that direction is
+unlearnable. Encouraging for assignment-labelled supervision.
+
+PA machinery works and confirms PA != CCS-direction: `scripts/rank_gold_protomers_by_energy.py` ran real
+ORCA PM3 energies on the 3 molecules with protonated SMILES. Most-stable (highest-PA, predicted base)
+protomer = higher CCS for benzocaine and melphalan but = LOWER CCS for danofloxacin. So proton affinity
+predicts ABUNDANCE (which peak), not CCS magnitude, as intended. (PM3 is crude -- benzocaine dE only 1.75
+kcal/mol, a near-tie that could flip; production ranking must use r2SCAN-3c via the
+`predict_candidate_ccs_dft.py` path.)
+
+LIMITATION that changes the plan: because the gold set has no intensity, it **cannot validate the
+abundance-assignment step** (PA -> most abundant -> base peak). It can only (a) confirm PA ranks abundance
+not CCS, and (b) reveal the site-type direction rule. The core premise "most-abundant protomer = highest
+PA = base peak" stays an assumption. To firm it up, either recover relative protomer intensities from the
+source papers (the `Reference` DOIs; manual, small n) for a true (site, CCS, intensity) validation set, or
+accept the premise and validate DOWNSTREAM: train on PA-assigned Enveda labels and test the model's
+direction against the gold's known site->CCS and the N-vs-O rule. Note also: since direction is largely a
+site-TYPE effect (N extended vs O/ring compact), QM PA is mainly needed to break N-vs-N ties (fentanyl-like)
+and to set abundance; the coarse direction may be recoverable from site type alone.
+
 ### KEY FINDING: base-CCS accuracy is data-limited, not method-limited
 
 Diagnostic (`configs/sigma_config_gen_adduct_fixed.json`, dims rebuilt from the checkpoint):
 the good reference model `GeneralizedAdducts_SigmaCCS`, which gets ~1.3% on its own curated data,
-reaches only **2.41% median-rel on the Enveda test set** ([M+H]+ 2.05%, [M-H]- 2.89%). So Enveda has
-an intrinsic ~2-2.4% CCS ceiling; `primary_only` (1.81%) beats it and `full` (2.51%) matches it. The
-"worse than expected" base CCS is an Enveda data-quality ceiling, not a defect in the training/method.
-Do not chase base CCS below ~2% on this data.
+reaches only **2.40% median-rel on the full Enveda test set** (25,720 molecules; run confirmed on the
+whole set, not just a sample). Per adduct: **[M+H]+ 2.02%** (14,765), **[M-H]- 3.06%** (6,350), and the
+minor adducts are worse ([M+Na]+ 3.5%, [M+NH4]+ 3.2%, [M+Cl]- 5.0%, [M+K]+ 4.6%). So Enveda has an
+intrinsic ~2% ([M+H]+) to ~3% ([M-H]-) CCS ceiling; `primary_only` (1.81%) beats it and `full` (2.51%)
+matches it. The "worse than expected" base CCS is an Enveda data-quality ceiling, not a defect in the
+training/method. Do not chase base CCS below ~2% on this data.
+
+Note on the reference run's gap section: it was run in neutral graph mode (a base-only, no-gap model),
+so its gap_MAE equals the zero-gap baseline (10.54) and its gap_corr 0.27 ~= the permutation null 0.19.
+That 0.27 is the anchored-offset matcher's floor, not a real gap signal, and is the correct control
+value for "no gap capability" (contrast the trained `full` model: gap_corr 0.71).
+
+**PROVEN FROM BOTH DIRECTIONS (2026-07-27):** the current approach trained on the curated SigmaCCS data
+(`configs/sigma_config_curated.json`, single-CCS -> base regression only) reaches **1.40% median-rel on
+the curated test set** ([M+H]+ 1.37%, [M-H]- 1.40%, [M+Na]+ 1.65%), matching the reference's ~1.3% on the
+same data. So: reference-on-Enveda = 2.40% (a good model cannot beat the Enveda ceiling) AND
+current-approach-on-curated = 1.40% (our method reaches curated-level accuracy when the data supports it).
+The base-CCS "underperformance" on Enveda is definitively a data-quality ceiling, not a method deficiency.
+The training procedure and architecture are sound for base CCS; the open work is entirely the gap
+direction (Next-step #0).
 
 ### Next steps
-1. **Retrain `full` + `primary_only` on the cleaned corpus** (configs in `outputs/ablations_clean/`;
-   with-multimer checkpoints preserved in `outputs/ablations/`). Confirm the gap result holds and base
-   tightens toward primary_only's 1.8%.
-2. **`gap_lambda` sweep (1, 2, 3):** frame as recovering base toward 1.8% while keeping gap_corr high,
-   not as fixing a defect. Map the base/gap Pareto front.
-3. **Gold directional spot-checks** on the retrained `full` (`--gold-csv protomer_eval/protomer_test_df.csv`):
-   danofloxacin (181.7/193.7), melphalan, benzocaine correct in direction and magnitude band.
-4. **Data-scale iteration (later):** merge the curated TIMS add-ons (CCSBase TIMS, PFAS); then the
+0. **DECIDED: assignment-labelled supervision by proton-affinity ranking.** The gap direction is not
+   learnable from CCS-matched labels (proven, `scripts/analyze_gap_direction.py`). The chosen path is to
+   assign site->peak by ENERGY (proton affinity -> abundance -> intensity order) and use the observed CCS
+   as the label, computing NO CCS. Full plan in the CHOSEN DIRECTION section above. **First concrete step:
+   build the Waters-gold PA-ranking validation** -- protonate `data/Waters/other_ccs_measurements.xlsx` at
+   its labelled sites, run the proton-affinity ranking, and confirm it recovers the known site->CCS before
+   any Enveda relabelling. Then: purity gate -> rank -> align -> label -> direction-aware loss; acceptance
+   = external gold directional accuracy, not the matcher-based Enveda gap_corr.
+1. **`full` retrained on clean data: DONE** (base 2.80%, gap held at 0.727, gold 1/3). Still to run:
+   **`primary_only` on the cleaned corpus** to confirm the base ceiling (~1.8-2%) with no gap-term tax.
+2. **Data-vs-method control: train the CURRENT approach on the curated (old) SigmaCCS data. DONE.**
+   Result: **1.40% median-rel** on the curated test ([M+H]+ 1.37%), matching the reference's ~1.3% on
+   the same data. This confirms the method reaches curated-level base accuracy when the data supports
+   it; Enveda's ~2% is purely a data ceiling. (`scripts/build_curated_corpus.py`,
+   `configs/sigma_config_curated.json`; native SigmaCCS splits so the number is directly comparable to
+   the reference; protomer 17-feature config, the two protomer features inert on neutral graphs.)
+3. **`gap_lambda` sweep -- now mainly a base-recovery question.** Since the gap direction is not real
+   (Next-step #0), the gap term is buying inflated metrics at the cost of base accuracy. Sweep toward
+   LOWER `gap_lambda` (and consider `primary_only` as the shipping base model) to recover base toward
+   1.8%. Do not tune to maximise the matcher-based gap_corr -- that metric is not trustworthy.
+4. **Gold directional check** is now the acceptance metric for any gap work, but must be measured on the
+   EXPANDED Waters set (Next-step #0), not the n=3 file. The current model fails it (1/3); do not
+   re-report the 3-molecule spot-check as validation.
+5. **Data-scale iteration (later):** merge the curated TIMS add-ons (CCSBase TIMS, PFAS); then the
    deferred non-TIMS sets + IM-technique/gas global feature to pool instruments (Section 1/2.5).
 
 ---
