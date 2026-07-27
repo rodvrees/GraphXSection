@@ -31,6 +31,14 @@ your ORCA build (the smoke test does).
 Reuses the lightweight rdkit helpers from rank_candidates_pm3 (embed_and_optimize,
 mol_to_xyz_block); the ORCA callers are inlined here to avoid the isicle/MOBCAL
 import chain (we do not compute CCS).
+
+Starts from the ORIGINAL Enveda data (data/Enveda-180/enveda-180.jsonl.gz). The
+protonation-candidate enumeration is not reimplemented here: this script calls
+the validated pipeline in enumerate_protonation_candidates.py (load_spectra ->
+build_secondary_species_table -> build_molecule_table -> run_candidate_generation,
+the exact chain that produced outputs/protonation_candidates/enveda_widened.parquet)
+and caches the result to --candidates. If that cache already exists it is reused
+as-is, so pointing --candidates at an existing candidate parquet skips enumeration.
 """
 from __future__ import annotations
 
@@ -340,9 +348,52 @@ def _run_pool(jobs, out_path, schema, append, fn, fn_args, n_jobs, chunk):
         tmp.unlink()
 
 
+def load_or_build_candidates(data_path: Path, candidates_path: Path,
+                             limit: Optional[int], chunk_size: int,
+                             force: bool) -> pd.DataFrame:
+    """Return the protonation-candidate table, enumerating from the ORIGINAL
+    Enveda data if the cache is absent.
+
+    Enumeration is delegated to enumerate_protonation_candidates.py (the same
+    chain that built enveda_widened.parquet), never reimplemented here. The
+    heavy import (dimorphite-dl et al.) happens only when the cache must be
+    built, so resumed stages that already have the cache stay lightweight.
+    """
+    if candidates_path.exists() and not force:
+        logger.info("Reusing existing candidate cache %s (delete or --force-enumerate to rebuild)",
+                    candidates_path)
+        return pd.read_parquet(candidates_path)
+
+    if not data_path.exists():
+        raise FileNotFoundError(
+            f"Candidate cache {candidates_path} not found and raw data {data_path} "
+            "is missing; pass --data (original Enveda file) or --candidates (pre-built parquet)."
+        )
+
+    logger.info("Enumerating protonation candidates from raw data %s -> %s", data_path, candidates_path)
+    import enumerate_protonation_candidates as epc  # heavy; import only when building
+
+    spectra_df = epc.load_spectra(data_path, limit_molecules=limit)
+    multi = epc.build_secondary_species_table(spectra_df)
+    mol_df = epc.build_molecule_table(spectra_df, multi)
+    candidates_path.parent.mkdir(parents=True, exist_ok=True)
+    stats = epc.run_candidate_generation(mol_df, candidates_path, chunk_size)
+    logger.info("Enumeration done: %d molecules processed", stats.get("molecules_processed", 0))
+    return pd.read_parquet(candidates_path)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--input", type=Path, default=Path("outputs/protonation_candidates/enveda_widened.parquet"))
+    ap.add_argument("--data", type=Path, default=Path("data/Enveda-180/enveda-180.jsonl.gz"),
+                    help="ORIGINAL Enveda spectra file (.jsonl.gz or -dedup.csv); candidates are "
+                         "enumerated from this via enumerate_protonation_candidates.py when the "
+                         "--candidates cache is absent")
+    ap.add_argument("--candidates", type=Path, default=Path("outputs/protomer_energies/candidates.parquet"),
+                    help="Candidate-table cache; reused if present, otherwise built from --data. "
+                         "Point at outputs/protonation_candidates/enveda_widened.parquet to reuse "
+                         "the pre-built set and skip enumeration")
+    ap.add_argument("--force-enumerate", action="store_true",
+                    help="Rebuild the candidate cache from --data even if --candidates exists")
     ap.add_argument("--stage", choices=["pm3", "dft", "rank", "all"], default="all")
     ap.add_argument("--pm3-out", type=Path, default=Path("outputs/protomer_energies/pm3.parquet"))
     ap.add_argument("--dft-out", type=Path, default=Path("outputs/protomer_energies/dft.parquet"))
@@ -368,7 +419,8 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=None, help="cap candidates (smoke testing)")
     args = ap.parse_args(argv)
 
-    cand = pd.read_parquet(args.input)
+    cand = load_or_build_candidates(args.data, args.candidates, args.limit,
+                                    args.chunk_size, args.force_enumerate)
     cand = cand[cand["candidate_smiles"].notna() & cand["charged_atom_idx"].notna()].copy()
     cand["charged_atom_idx"] = cand["charged_atom_idx"].astype("int32")
     cand["charge_state"] = cand["charge_state"].astype("int8")

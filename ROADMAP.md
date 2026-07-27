@@ -171,6 +171,20 @@ Pipeline (no MOBCAL / MD / CCS prediction anywhere):
    Reuses `embed_and_optimize`/`mol_to_xyz_block` (`rank_candidates_pm3.py`); ORCA callers inlined to
    avoid the isicle/MOBCAL chain. Resume/skip-existing built in. Runs on ALL molecules (not just gap
    ones) so the dominant protomer that sets each molecule's base-CCS structure is validated everywhere.
+   - **Starts from the ORIGINAL data** (`--data data/Enveda-180/enveda-180.jsonl.gz`), not a pre-built
+     intermediate. Candidate enumeration is delegated to the validated pipeline in
+     `enumerate_protonation_candidates.py` (`load_spectra` -> `build_secondary_species_table` ->
+     `build_molecule_table` -> `run_candidate_generation`, the exact chain that produced
+     `enveda_widened.parquet`), then cached to `--candidates` (default
+     `outputs/protomer_energies/candidates.parquet`) and reused on resume. Point `--candidates` at an
+     existing candidate parquet to skip enumeration; `--force-enumerate` rebuilds the cache.
+   - **Starts from the ORIGINAL data** (`--data data/Enveda-180/enveda-180.jsonl.gz`), not a pre-built
+     intermediate. Candidate enumeration is delegated to the validated pipeline in
+     `enumerate_protonation_candidates.py` (`load_spectra` -> `build_secondary_species_table` ->
+     `build_molecule_table` -> `run_candidate_generation`, the exact chain that produced
+     `enveda_widened.parquet`), then cached to `--candidates` (default
+     `outputs/protomer_energies/candidates.parquet`) and reused on resume. Point `--candidates` at an
+     existing candidate parquet to skip enumeration; `--force-enumerate` rebuilds the cache.
    - **Enumerate ALL competing sites; do NOT pre-filter by element.** The archived N>O>S first-tier-only
      `identify_protonation_sites` would enumerate only N whenever any N exists, discarding the O protomer
      that is actually observed (danofloxacin keto-O+ vs amine-N+; benzocaine carboxyl-O+ vs amine-N+).
