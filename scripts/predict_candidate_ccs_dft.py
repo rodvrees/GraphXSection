@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import multiprocessing
 import os
 import re
 import subprocess
@@ -91,7 +92,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_ORCA_BIN = "/home/rodvrees/orca_6_0_0/orca"
+DEFAULT_ORCA_BIN = "/home/robbe/orca_6_0_0/orca"
 
 
 def run_orca_singlepoint_mulliken(
@@ -152,6 +153,31 @@ def _static_ccs(
         return None
     ccs = parsed.get("ccs")
     return ccs["mean"] if ccs else None
+
+
+# Set once per pool worker by _init_worker (below). mobcal_shm's fork_and_bind
+# pins each forked thread to core (thread_id + MOBCAL_CORE_OFFSET) % ncores;
+# with no offset EVERY concurrent mobcal_shm call pins to the same low cores and
+# starves (confirmed directly: with --n-jobs 200 all calls landed on cores 0-1
+# at ~5% CPU each and every one blew past --mobcal-timeout-seconds -> 'mobcal_
+# failed'). Unlike predict_candidate_ccs_md.py -- which gates mobcal through a
+# small slot queue and reassigns the offset per call -- this script runs mobcal
+# freely across all --n-jobs workers, so each worker instead claims ONE fixed,
+# disjoint core block for its whole lifetime. Requires
+# --n-jobs * --mobcal-core-block-size <= core count for the blocks to stay
+# non-overlapping (checked in main()).
+_WORKER_CORE_OFFSET_QUEUE = None
+
+
+def _init_worker(offset_queue, block_size: int) -> None:
+    """Claim this worker's core block (a distinct index from the shared queue)
+    and export it as MOBCAL_CORE_OFFSET so every mobcal_shm subprocess this
+    worker later spawns inherits it (subprocesses inherit os.environ)."""
+    try:
+        idx = offset_queue.get_nowait()
+    except Exception:  # noqa: BLE001 - queue empty (more workers than blocks); fall back to 0
+        idx = 0
+    os.environ["MOBCAL_CORE_OFFSET"] = str(idx * block_size)
 
 
 def process_candidate(job: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -273,10 +299,25 @@ def main(argv: Optional[list[str]] = None) -> int:
                          help="Threads per mobcal_shm call. Kept modest (not 32, unlike "
                               "predict_candidate_ccs_md.py's default) since --n-jobs candidates run "
                               "genuinely concurrently here (no shared gate, no MD to dominate the "
-                              "timeline) -- --n-jobs * this must stay within the core count")
+                              "timeline) -- --n-jobs * --mobcal-core-block-size must stay within the "
+                              "core count")
+    parser.add_argument("--mobcal-core-block-size", type=int, default=2,
+                         help="Cores reserved per worker for its mobcal_shm calls. Each of the --n-jobs "
+                              "workers pins its mobcal to a disjoint block (worker_index * this) via "
+                              "MOBCAL_CORE_OFFSET, so concurrent calls don't collide on the same cores "
+                              "(which starves them to a timeout). Must cover a single mobcal_shm call's "
+                              "real footprint: measured at 2 cores for --mobcal-threads 1 (one main + one "
+                              "worker process, both pinned), so keep this >= --mobcal-threads + 1 and "
+                              "--n-jobs * this <= core count.")
     parser.add_argument("--mobcal-timeout-seconds", type=int, default=300)
     parser.add_argument("--n-jobs", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--chunk-size", type=int, default=10)
+    parser.add_argument("--max-consecutive-failures", type=int, default=20,
+                         help="Abort the whole run if this many candidates fail (status != 'ok') in a "
+                              "row. A long unbroken failure streak signals a systemic problem (exhausted "
+                              "SysV shm segments, missing/broken binary, full scratch dir) rather than "
+                              "isolated per-molecule failures, so stop instead of burning compute on the "
+                              "rest. Set to 0 to disable.")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--scratch-dir", type=str, default="/dev/shm" if Path("/dev/shm").is_dir() else None)
     args = parser.parse_args(argv)
@@ -285,6 +326,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         raise FileNotFoundError(f"ORCA binary not found at {args.orca_bin}")
     if not Path(args.mobcal_bin).exists():
         raise FileNotFoundError(f"mobcal_shm binary not found at {args.mobcal_bin}")
+
+    # The per-worker core blocks must fit within the machine or they wrap and
+    # collide again (defeating the whole point). Warn rather than hard-fail so
+    # small/ad-hoc runs still work, but make the oversubscription explicit.
+    ncores = os.cpu_count() or 1
+    if args.n_jobs * args.mobcal_core_block_size > ncores:
+        logger.warning(
+            "--n-jobs (%d) * --mobcal-core-block-size (%d) = %d exceeds the %d available cores; "
+            "worker core blocks will wrap and some mobcal_shm calls will contend on shared cores "
+            "(risking the timeout-driven 'mobcal_failed' this offset scheme exists to prevent). "
+            "Lower --n-jobs to <= %d, or reduce --mobcal-core-block-size.",
+            args.n_jobs, args.mobcal_core_block_size, args.n_jobs * args.mobcal_core_block_size,
+            ncores, ncores // max(1, args.mobcal_core_block_size),
+        )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -326,13 +381,52 @@ def main(argv: Optional[list[str]] = None) -> int:
         writer.write_table(table)
         buffer.clear()
 
+    # Pre-fill one core-block index per worker; _init_worker claims one each so
+    # every worker pins its mobcal_shm calls to a disjoint block of cores.
+    manager = multiprocessing.Manager()
+    offset_queue = manager.Queue()
+    for idx in range(args.n_jobs):
+        offset_queue.put(idx)
+
+    aborted = False
+    consecutive_failures = 0
     try:
-        with ProcessPoolExecutor(max_workers=args.n_jobs) as executor:
+        with ProcessPoolExecutor(
+            max_workers=args.n_jobs,
+            initializer=_init_worker,
+            initargs=(offset_queue, args.mobcal_core_block_size),
+        ) as executor:
             futures = [executor.submit(process_candidate, job, args) for job in jobs]
             for future in tqdm(as_completed(futures), total=len(futures), desc=f"{args.dft_method} re-ranking + CCS"):
                 result = future.result()
                 buffer.append(result)
                 stats[result["status"]] = stats.get(result["status"], 0) + 1
+
+                # Early-abort on a long unbroken failure streak: a run where
+                # every candidate fails (status != "ok") is almost always a
+                # systemic problem (exhausted SysV shm segments, missing binary,
+                # full scratch dir), not per-molecule bad luck, so bail out
+                # rather than grinding through all of jobs producing garbage.
+                if result["status"] == "ok":
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    if 0 < args.max_consecutive_failures <= consecutive_failures:
+                        aborted = True
+                        logger.error(
+                            "Aborting: %d candidates failed in a row (most recent status: %s). This "
+                            "signals a systemic failure, not isolated per-molecule failures -- stopping "
+                            "after %d/%d candidates instead of processing the rest. Fix the underlying "
+                            "cause and rerun (results so far are already written to %s).",
+                            consecutive_failures, result["status"], sum(stats.values()), len(jobs),
+                            args.output,
+                        )
+                        # Drop not-yet-started work; already-running candidates
+                        # (up to --n-jobs) still finish as the pool shuts down.
+                        for pending in futures:
+                            pending.cancel()
+                        break
+
                 if len(buffer) >= args.chunk_size:
                     flush()
         flush()
@@ -342,6 +436,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     logger.info("Run summary:")
     for key in sorted(stats):
         logger.info("  %s: %d", key, stats[key])
+    if aborted:
+        logger.error("Run ABORTED early (%d consecutive failures); output at %s is incomplete.",
+                     consecutive_failures, args.output)
+        return 1
     logger.info("Wrote DFT re-ranking/CCS results to %s", args.output)
     return 0
 

@@ -100,6 +100,7 @@ import logging
 import multiprocessing
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -124,7 +125,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_ORCA_BIN = "/home/rodvrees/orca_6_0_0/orca"
+DEFAULT_ORCA_BIN = "/home/robbe/orca_6_0_0/orca"
 DEFAULT_MOBCAL_BIN = str(
     Path(__file__).resolve().parent.parent / "third_party" / "mobcal-shm" / "mobcal_shm"
 )
@@ -359,6 +360,16 @@ def _frame_ccs(
     except Exception:
         # Malformed/absent .out (e.g. mobcal timed out mid-run, or crashed)
         return None
+    finally:
+        # MobcalWrapper.__init__ creates a per-call temp_dir but never removes
+        # it (_free_leaked_mobcal_shm only frees the SysV shm segment, not the
+        # on-disk dir). Each frame therefore leaks ~7 inodes under /tmp/isicle;
+        # over a multi-day shard this exhausts the tmpfs inode table and every
+        # subsequent write fails ENOSPC, stalling the run (confirmed root cause
+        # of a mid-shard-01 stall). Remove it here now that .out is parsed.
+        td = getattr(wrapper, "temp_dir", None)
+        if td:
+            shutil.rmtree(td, ignore_errors=True)
     ccs = parsed.get("ccs")
     return ccs["mean"] if ccs else None
 
@@ -609,14 +620,40 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
 
     stats: dict[str, int] = {}
-    writer = pq.ParquetWriter(args.output, OUTPUT_SCHEMA)
+
+    # Durable checkpointing: write each flush as its own self-contained
+    # (footer-closed) Parquet part file under <output>.parts/, instead of a
+    # single long-lived ParquetWriter whose footer is only written on close().
+    # A kill/ENOSPC then loses at most one chunk, and the run RESUMES from the
+    # parts rather than losing the whole shard (a single-writer run lost ~38h
+    # this way once). Delete the .parts/ dir to force a fresh recomputation.
+    parts_dir = Path(str(args.output) + ".parts")
+    parts_dir.mkdir(parents=True, exist_ok=True)
+
+    done_keys: set = set()
+    existing_parts = sorted(parts_dir.glob("part_*.parquet"))
+    if existing_parts:
+        prev = pd.read_parquet(parts_dir)
+        for ik, cs, sm, st in zip(prev["inchikey"], prev["charge_state"],
+                                  prev["candidate_smiles"], prev["status"]):
+            done_keys.add((ik, int(cs), sm))
+            stats[st] = stats.get(st, 0) + 1
+        logger.info("Resuming: %d candidates already checkpointed in %d part files",
+                    len(done_keys), len(existing_parts))
+
+    jobs = [j for j in jobs
+            if (j["inchikey"], int(j["charge_state"]), j["candidate_smiles"]) not in done_keys]
+    logger.info("%d candidates remaining to compute", len(jobs))
+
     buffer: list[dict[str, Any]] = []
+    part_counter = [len(existing_parts)]
 
     def flush() -> None:
         if not buffer:
             return
         table = pa.Table.from_pandas(pd.DataFrame(buffer), schema=OUTPUT_SCHEMA, preserve_index=False)
-        writer.write_table(table)
+        pq.write_table(table, parts_dir / f"part_{part_counter[0]:05d}.parquet")
+        part_counter[0] += 1
         buffer.clear()
 
     # Shared mobcal gate: a queue pre-filled with `--mobcal-concurrency` slot
@@ -627,20 +664,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     for slot in range(max(1, args.mobcal_concurrency)):
         slot_queue.put(slot)
 
-    try:
-        with ProcessPoolExecutor(
-            max_workers=args.n_jobs, initializer=_init_worker, initargs=(slot_queue,)
-        ) as executor:
-            futures = [executor.submit(predict_candidate_ccs, job, args) for job in jobs]
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Predicting candidate CCS (ORCA MD + MOBCAL)"):
-                result = future.result()
-                buffer.append(result)
-                stats[result["status"]] = stats.get(result["status"], 0) + 1
-                if len(buffer) >= args.chunk_size:
-                    flush()
-        flush()
-    finally:
-        writer.close()
+    with ProcessPoolExecutor(
+        max_workers=args.n_jobs, initializer=_init_worker, initargs=(slot_queue,)
+    ) as executor:
+        futures = [executor.submit(predict_candidate_ccs, job, args) for job in jobs]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Predicting candidate CCS (ORCA MD + MOBCAL)"):
+            result = future.result()
+            buffer.append(result)
+            stats[result["status"]] = stats.get(result["status"], 0) + 1
+            if len(buffer) >= args.chunk_size:
+                flush()
+    flush()
+
+    # Merge all checkpoint parts into the single final output Parquet that
+    # downstream (validate_matching.py) expects.
+    all_parts = sorted(parts_dir.glob("part_*.parquet"))
+    if all_parts:
+        merged = pd.read_parquet(parts_dir)
+        pq.write_table(
+            pa.Table.from_pandas(merged, schema=OUTPUT_SCHEMA, preserve_index=False),
+            args.output,
+        )
+        logger.info("Merged %d part files into %s (%d rows)",
+                    len(all_parts), args.output, len(merged))
 
     logger.info("Run summary:")
     for key in sorted(stats):

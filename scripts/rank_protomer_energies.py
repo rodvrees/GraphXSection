@@ -104,7 +104,8 @@ def run_pm3_opt(xyz_block: str, charge: int, orca_bin: str, timeout_s: int,
     """PM3 geometry optimisation. Returns (energy_hartree, optimized_xyz_block,
     status). The optimized geometry (last CARTESIAN COORDINATES block) is kept so
     Stage 2 can run the DFT single point without re-optimising."""
-    with tempfile.TemporaryDirectory(prefix="orca_pm3_", dir=scratch_root) as scratch:
+    with tempfile.TemporaryDirectory(prefix="orca_pm3_", dir=scratch_root,
+                                     ignore_cleanup_errors=True) as scratch:
         inp = Path(scratch) / "job.inp"
         inp.write_text(f"! PM3 Opt\n* xyz {charge} 1\n{xyz_block}\n*\n")
         try:
@@ -126,7 +127,8 @@ def run_dft_sp(xyz_block: str, charge: int, method: str, orca_bin: str, timeout_
                scratch_root: Optional[str]) -> tuple[Optional[float], str]:
     """Single point at `method`. Returns (energy_hartree, status). Flags SCF
     non-convergence explicitly (important for anions)."""
-    with tempfile.TemporaryDirectory(prefix="orca_dft_", dir=scratch_root) as scratch:
+    with tempfile.TemporaryDirectory(prefix="orca_dft_", dir=scratch_root,
+                                     ignore_cleanup_errors=True) as scratch:
         inp = Path(scratch) / "job.inp"
         inp.write_text(f"! {method}\n* xyz {charge} 1\n{xyz_block}\n*\n")
         try:
@@ -155,13 +157,19 @@ _PM3_SCHEMA = pa.schema([
 
 def _pm3_one(job: dict, orca_bin: str, timeout_s: int, scratch_root: Optional[str]) -> dict:
     r = {k: job[k] for k in ("inchikey", "charge_state", "candidate_smiles", "charged_atom_idx")}
-    mol, st = embed_and_optimize(job["candidate_smiles"])
-    if mol is None:
-        return {**r, "pm3_energy_hartree": None, "opt_xyz": None, "pm3_status": st}
-    if Chem.GetFormalCharge(mol) != job["charge_state"]:
-        return {**r, "pm3_energy_hartree": None, "opt_xyz": None, "pm3_status": "charge_mismatch"}
-    e, opt_xyz, st = run_pm3_opt(mol_to_xyz_block(mol), int(job["charge_state"]), orca_bin, timeout_s, scratch_root)
-    return {**r, "pm3_energy_hartree": e, "opt_xyz": opt_xyz, "pm3_status": st}
+    try:
+        mol, st = embed_and_optimize(job["candidate_smiles"])
+        if mol is None:
+            return {**r, "pm3_energy_hartree": None, "opt_xyz": None, "pm3_status": st}
+        if Chem.GetFormalCharge(mol) != job["charge_state"]:
+            return {**r, "pm3_energy_hartree": None, "opt_xyz": None, "pm3_status": "charge_mismatch"}
+        e, opt_xyz, st = run_pm3_opt(mol_to_xyz_block(mol), int(job["charge_state"]), orca_bin, timeout_s, scratch_root)
+        return {**r, "pm3_energy_hartree": e, "opt_xyz": opt_xyz, "pm3_status": st}
+    except Exception as exc:
+        # A single job must never take down the whole pool (e.g. a temp-dir
+        # cleanup race raising from inside run_pm3_opt) -- record and move on.
+        return {**r, "pm3_energy_hartree": None, "opt_xyz": None,
+                "pm3_status": f"worker_exception:{type(exc).__name__}"}
 
 
 def _done_keys(path: Path, cols: list[str]) -> set:
@@ -171,8 +179,28 @@ def _done_keys(path: Path, cols: list[str]) -> set:
     return set(map(tuple, df[cols].itertuples(index=False, name=None)))
 
 
+def _reconcile_partial(out_path: Path, key_cols: list[str]) -> None:
+    """Merge a `<out_path>.partial.parquet` left behind by a run that crashed
+    before `_run_pool` reached its own end-of-run merge. Without this, those
+    already-computed rows are invisible to `_done_keys` and get silently
+    recomputed (losing the compute the crashed run already paid for)."""
+    partial = out_path.with_suffix(".partial.parquet")
+    if not partial.exists():
+        return
+    logger.warning("Found stale %s from an interrupted run; merging into %s before resuming", partial, out_path)
+    parts = [pd.read_parquet(partial)]
+    if out_path.exists():
+        parts.insert(0, pd.read_parquet(out_path))
+    before = len(parts[-1])
+    combined = pd.concat(parts, ignore_index=True).drop_duplicates(key_cols, keep="last")
+    combined.to_parquet(out_path, index=False)
+    partial.unlink()
+    logger.info("Recovered %d rows from %s -> %s now has %d rows", before, partial, out_path, len(combined))
+
+
 def stage_pm3(cand: pd.DataFrame, out_path: Path, args) -> None:
     key = ["inchikey", "charge_state", "charged_atom_idx"]
+    _reconcile_partial(out_path, key)
     done = _done_keys(out_path, key)
     jobs = [row._asdict() for row in cand.itertuples(index=False)
             if (row.inchikey, row.charge_state, row.charged_atom_idx) not in done]
@@ -217,16 +245,21 @@ def _dft_one(job: dict, method_pos: str, method_neg: str, orca_bin: str, timeout
              scratch_root: Optional[str]) -> dict:
     r = {k: job[k] for k in ("inchikey", "charge_state", "charged_atom_idx")}
     method = method_neg if job["charge_state"] == -1 else method_pos
-    if not job.get("opt_xyz"):
-        return {**r, "dft_energy_hartree": None, "dft_method": method, "dft_status": "no_geometry"}
-    e, st = run_dft_sp(job["opt_xyz"], int(job["charge_state"]), method, orca_bin, timeout_s, scratch_root)
-    return {**r, "dft_energy_hartree": e, "dft_method": method, "dft_status": st}
+    try:
+        if not job.get("opt_xyz"):
+            return {**r, "dft_energy_hartree": None, "dft_method": method, "dft_status": "no_geometry"}
+        e, st = run_dft_sp(job["opt_xyz"], int(job["charge_state"]), method, orca_bin, timeout_s, scratch_root)
+        return {**r, "dft_energy_hartree": e, "dft_method": method, "dft_status": st}
+    except Exception as exc:
+        return {**r, "dft_energy_hartree": None, "dft_method": method,
+                "dft_status": f"worker_exception:{type(exc).__name__}"}
 
 
 def stage_dft(pm3_path: Path, cand: pd.DataFrame, out_path: Path, args) -> None:
     pm3 = pd.read_parquet(pm3_path)
     sel = select_dft_molecules(pm3, cand, args)
     key = ["inchikey", "charge_state", "charged_atom_idx"]
+    _reconcile_partial(out_path, key)
     done = _done_keys(out_path, key)
     jobs = [r._asdict() for r in sel.itertuples(index=False)
             if (r.inchikey, r.charge_state, r.charged_atom_idx) not in done]
@@ -337,7 +370,7 @@ def _run_pool(jobs, out_path, schema, append, fn, fn_args, n_jobs, chunk):
                     done_n += 1
                     if len(buf) >= chunk:
                         flush()
-                    if done_n % (chunk * 5) == 0:
+                    if done_n % 25 == 0:
                         logger.info("  %d / %d done", done_n, len(jobs))
                 flush()
     finally:
