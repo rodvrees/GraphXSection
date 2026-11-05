@@ -1,0 +1,34 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+title: "GraphXSection"
+abstract: >-
+  Code for training and evaluating Graph Neural Network (GNN)-based models
+  for predicting the Collisional Cross Section (CCS) of small molecules,
+  including the creation of saliency maps to visually explain model
+  predictions. GraphXSection is an implementation of Molgraph.
+authors:
+  - family-names: "Devreese"   
+    given-names: "Robbe"   
+    # orcid: "https://orcid.org/0000-0000-0000-0000"
+    # affiliation: "Your institution"
+repository-code: "https://github.com/rodvrees/GraphXSection"
+url: "https://github.com/rodvrees/GraphXSection"
+keywords:
+  - collisional cross section
+  - CCS prediction
+  - ion mobility
+  - graph neural networks
+  - small molecules
+  - saliency maps
+  - cheminformatics
+# license: MIT                 # TODO: add once the repo has a license (SPDX identifier)
+# version: "0.1.0"             # TODO: add once you tag a release
+# date-released: "2026-11-05"  # TODO: set to the release date
+references:
+  - type: software
+    title: "Molgraph"
+    authors:
+      - family-names: "Kensert"
+        given-names: "Alexander"
+    repository-code: "https://github.com/akensert/molgraph"
